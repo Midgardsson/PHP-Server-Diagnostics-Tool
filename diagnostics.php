@@ -1,17 +1,17 @@
 <?php
 /**
  * PHP Server Diagnostics Tool
- * Vizuális diagnosztikai eszköz PHP környezet elemzéséhez
+ * Visual diagnostic tool for PHP environment analysis
  */
 
-// Biztonsági beállítás - csak localhost-ról engedjük
+// Security setting - allow only from localhost
 if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1', 'localhost'])) {
-    // Éles környezetben kommenteld ki, vagy adj hozzá IP white-list-et
+    // In production, comment this out or add IP whitelist
     // die('Access denied. This tool is only accessible from localhost.');
 }
 
 /**
- * Formázza a bájtokat olvasható formátumba
+ * Format bytes to readable format
  */
 function formatBytes($bytes, $precision = 2) {
     $units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -23,7 +23,7 @@ function formatBytes($bytes, $precision = 2) {
 }
 
 /**
- * Státusz badge színe
+ * Status badge color
  */
 function getStatusColor($value, $type = 'boolean') {
     if ($type === 'boolean') {
@@ -33,7 +33,7 @@ function getStatusColor($value, $type = 'boolean') {
 }
 
 /**
- * PHP Extensions lekérése csoportosítva
+ * Get PHP Extensions grouped by category
  */
 function getExtensionsByCategory() {
     $loaded = get_loaded_extensions();
@@ -74,7 +74,7 @@ function getExtensionsByCategory() {
 }
 
 /**
- * OPcache információk
+ * OPcache information
  */
 function getOPcacheInfo() {
     if (!function_exists('opcache_get_status')) {
@@ -92,7 +92,7 @@ function getOPcacheInfo() {
 }
 
 /**
- * APCu információk
+ * APCu information
  */
 function getAPCuInfo() {
     if (!function_exists('apcu_cache_info')) {
@@ -110,7 +110,7 @@ function getAPCuInfo() {
 }
 
 /**
- * Redis információk
+ * Redis information
  */
 function getRedisInfo() {
     if (!extension_loaded('redis')) {
@@ -121,7 +121,7 @@ function getRedisInfo() {
     $connected = false;
     $connectionType = '';
 
-    // Próbálkozások különböző kapcsolódási módokkal
+    // Try different connection methods
     $attempts = [
         ['type' => 'unix_socket', 'path' => '/var/run/redis/redis-server.sock'],
         ['type' => 'unix_socket', 'path' => '/var/run/redis/redis.sock'],
@@ -164,7 +164,7 @@ function getRedisInfo() {
         $info = $redis->info();
         $dbsize = $redis->dbSize();
         
-        // Memory információk
+        // Memory information
         $usedMemory = $info['used_memory'] ?? 0;
         $maxMemory = $info['maxmemory'] ?? 0;
         
@@ -203,7 +203,7 @@ function getRedisInfo() {
 }
 
 /**
- * Memcached információk
+ * Memcached information
  */
 function getMemcachedInfo() {
     if (!extension_loaded('memcached') && !extension_loaded('memcache')) {
@@ -261,7 +261,7 @@ function getMemcachedInfo() {
 }
 
 /**
- * MySQL/MariaDB információk
+ * MySQL/MariaDB information
  */
 function getMySQLInfo() {
     if (!extension_loaded('mysqli')) {
@@ -287,12 +287,12 @@ function getMySQLInfo() {
                 $result['connected'] = true;
                 $result['connection'] = $attempt['socket'] ?: $attempt['host'];
                 
-                // Verzió
+                // Version
                 $version = $mysqli->get_server_info();
                 $result['version'] = $version;
                 $result['is_mariadb'] = stripos($version, 'mariadb') !== false;
                 
-                // Status változók
+                // Status variables
                 $status = [];
                 if ($res = $mysqli->query("SHOW GLOBAL STATUS")) {
                     while ($row = $res->fetch_assoc()) {
@@ -308,7 +308,7 @@ function getMySQLInfo() {
                 $result['bytes_received'] = $status['Bytes_received'] ?? 0;
                 $result['bytes_sent'] = $status['Bytes_sent'] ?? 0;
                 
-                // InnoDB buffer pool ha van
+                // InnoDB buffer pool if available
                 if (isset($status['Innodb_buffer_pool_pages_total'])) {
                     $result['innodb_buffer_pool_size'] = ($status['Innodb_buffer_pool_pages_total'] ?? 0) * 16384; // page size 16KB
                     $result['innodb_buffer_pool_pages_free'] = $status['Innodb_buffer_pool_pages_free'] ?? 0;
@@ -326,7 +326,7 @@ function getMySQLInfo() {
 }
 
 /**
- * PostgreSQL információk
+ * PostgreSQL information
  */
 function getPostgreSQLInfo() {
     if (!extension_loaded('pgsql')) {
@@ -351,19 +351,19 @@ function getPostgreSQLInfo() {
                 $result['connected'] = true;
                 $result['connection'] = $connstr;
                 
-                // Verzió
+                // Version
                 $version = pg_version($conn);
                 $result['server_version'] = $version['server'] ?? 'N/A';
                 $result['client_version'] = $version['client'] ?? 'N/A';
                 
-                // Adatbázisok száma
+                // Database count
                 $res = @pg_query($conn, "SELECT count(*) as db_count FROM pg_database WHERE datistemplate = false");
                 if ($res) {
                     $row = pg_fetch_assoc($res);
                     $result['database_count'] = $row['db_count'];
                 }
                 
-                // Kapcsolatok
+                // Connections
                 $res = @pg_query($conn, "SELECT count(*) as conn_count FROM pg_stat_activity");
                 if ($res) {
                     $row = pg_fetch_assoc($res);
@@ -382,7 +382,7 @@ function getPostgreSQLInfo() {
 }
 
 /**
- * PDO kapcsolatok információi
+ * PDO connection information
  */
 function getPDOInfo() {
     $pdoDrivers = [];
@@ -464,7 +464,7 @@ function getPDOInfo() {
 }
 
 /**
- * SQLite3 információk
+ * SQLite3 information
  */
 function getSQLite3Info() {
     if (!extension_loaded('sqlite3')) {
@@ -487,7 +487,7 @@ function getSQLite3Info() {
 }
 
 /**
- * MongoDB információk
+ * MongoDB information
  */
 function getMongoDBInfo() {
     if (!extension_loaded('mongodb')) {
@@ -531,17 +531,17 @@ function getMongoDBInfo() {
 }
 
 /**
- * Lemez használat információk
+ * Disk usage information
  */
 function getDiskInfo() {
     $disks = [];
     
-    // Linux rendszeren df parancs
+    // Linux system df command
     if (PHP_OS_FAMILY === 'Linux' || PHP_OS_FAMILY === 'Darwin') {
         $output = @shell_exec('df -h 2>/dev/null');
         if ($output) {
             $lines = explode("\n", trim($output));
-            array_shift($lines); // Header sor
+            array_shift($lines); // Header row
             
             foreach ($lines as $line) {
                 if (empty(trim($line))) continue;
@@ -549,7 +549,7 @@ function getDiskInfo() {
                 $parts = preg_split('/\s+/', $line);
                 if (count($parts) >= 6) {
                     $filesystem = $parts[0];
-                    // Kihagyjuk a temp filesystemeket és loopokat
+                    // Skip temp filesystems and loops
                     if (strpos($filesystem, 'tmpfs') !== false || 
                         strpos($filesystem, 'loop') !== false ||
                         strpos($filesystem, 'devtmpfs') !== false) {
@@ -568,7 +568,7 @@ function getDiskInfo() {
             }
         }
         
-        // Inode információ
+        // Inode information
         $inodeOutput = @shell_exec('df -i 2>/dev/null');
         if ($inodeOutput) {
             $lines = explode("\n", trim($inodeOutput));
@@ -586,7 +586,7 @@ function getDiskInfo() {
             }
         }
     } else {
-        // Windows esetén
+        // Windows case
         $disks[] = [
             'filesystem' => 'C:',
             'total' => disk_total_space('C:'),
@@ -600,7 +600,7 @@ function getDiskInfo() {
 }
 
 /**
- * System Load és CPU információk
+ * System Load and CPU information
  */
 function getSystemLoad() {
     $info = [
@@ -643,7 +643,7 @@ function getSystemLoad() {
 }
 
 /**
- * Memória információk
+ * Memory information
  */
 function getMemoryInfo() {
     return [
@@ -654,7 +654,7 @@ function getMemoryInfo() {
 }
 
 /**
- * PHP konfigurációs fájlok
+ * PHP configuration files
  */
 function getConfigFiles() {
     $files = [];
@@ -671,7 +671,7 @@ function getConfigFiles() {
 }
 
 /**
- * Fontos PHP direktívák
+ * Important PHP directives
  */
 function getImportantDirectives() {
     return [
@@ -708,7 +708,7 @@ function getImportantDirectives() {
     ];
 }
 
-// Adatok gyűjtése
+// Data collection
 $phpVersion = phpversion();
 $extensions = getExtensionsByCategory();
 $opcache = getOPcacheInfo();
@@ -737,7 +737,7 @@ $serverInfo = [
 ];
 ?>
 <!DOCTYPE html>
-<html lang="hu">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1721,7 +1721,7 @@ $serverInfo = [
                 Script execution time: <?= round((microtime(true) - $_SERVER['REQUEST_TIME_FLOAT']) * 1000, 2) ?> ms
             </p>
             <p style="color: #9ca3af; font-size: 0.9em;">
-                ⚠️ Biztonsági figyelmeztetés: Ez az eszköz érzékeny információkat tartalmaz. Éles környezetben korlátozd a hozzáférést!
+                ⚠️ Security Warning: This tool contains sensitive information. Restrict access in production environments!
             </p>
         </div>
     </div>
