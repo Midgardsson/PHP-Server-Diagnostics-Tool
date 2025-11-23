@@ -1,47 +1,122 @@
 # 🔍 PHP Server Diagnostics Tool
 
-Vizuális PHP diagnosztikai eszköz, amely részletes információkat jelenít meg a szerver környezetéről, telepített kiegészítőkről, cache rendszerekről és teljesítmény metrikákról.
+A comprehensive visual PHP diagnostics tool that displays detailed information about your server environment, installed extensions, cache systems, databases, and performance metrics with a modern dark mode interface.
 
-## ✨ Funkciók
+## ✨ Features
 
-### 📊 Vizuális Megjelenítés
-- Modern, responsive design
-- Színkódolt státuszok
-- Interaktív kártya alapú elrendezés
-- Progressz bárok memória és cache használathoz
+### 🌙 Modern Interface
+- Beautiful dark mode design
+- Fully responsive layout
+- Color-coded status indicators
+- Interactive card-based layout
+- Progress bars for memory and cache usage
+- 5px border radius for clean aesthetics
 
-### 🔧 Diagnosztikai Információk
+### 🔧 Diagnostic Information
 
-#### 1. **Memory Usage** (Memóriahasználat)
-- Aktuális memóriahasználat
-- Csúcs memóriahasználat
-- Memória limit beállítás
+#### 1. **Memory Usage**
+- Current memory usage
+- Peak memory usage
+- Memory limit configuration
 
-#### 2. **Server Information** (Szerver információk)
-- Operációs rendszer
-- Server API (Apache, Nginx, CLI, stb.)
-- Architektúra (32/64-bit)
-- Zend verzió
-- Szerver szoftver
-- Időzóna
+#### 2. **System Load**
+- CPU core count
+- Load average (1, 5, 15 minutes)
+- Load percentage visualization
+- System uptime
 
-#### 3. **OPcache Status** (OPcache állapot)
-- Engedélyezve/Letiltva státusz
-- Cache telítettség
-- Gyorsítótárazott scriptek száma
-- Hit rate (találati arány) %
-- Memóriahasználat vizuális progressz bárral
-- Színkódolt figyelmeztetések (75% felett narancssárga, 90% felett piros)
+#### 3. **Disk Usage**
+- All disk partitions
+- Size, used, and available space
+- Usage percentage with progress bars
+- Inode usage monitoring
+- Automatic filtering of temp filesystems
 
-#### 4. **APCu Cache** (APCu gyorsítótár)
-- Státusz
-- Gyorsítótárazott kulcsok száma
-- Találatok és kihagyások
-- Memóriahasználat vizualizáció
+#### 4. **Server Information**
+- Operating system
+- Server API (Apache, Nginx, CLI, etc.)
+- Architecture (32/64-bit)
+- Zend version
+- Server software
+- Document root
+- Timezone
 
-#### 5. **PHP Extensions** (PHP kiegészítők)
-Kategorizált megjelenítés:
-- **Database**: mysqli, PDO, MongoDB, Redis, stb.
+#### 5. **OPcache Status**
+- Enabled/Disabled status
+- Cache full indicator
+- Number of cached scripts
+- Hit rate percentage
+- Memory usage with visual progress bar
+- Color-coded warnings (orange >75%, red >90%)
+
+#### 6. **APCu Cache**
+- Status indicator
+- Number of cached keys
+- Hits and misses statistics
+- Memory usage visualization
+
+#### 7. **Redis Cache** 🔴
+- Auto-detection (Unix socket and TCP)
+- Connection type display
+- Version information
+- Uptime tracking
+- Total keys count
+- Hit rate percentage
+- Hits/Misses statistics
+- Connected clients
+- Evicted keys monitoring
+- Memory usage with limits
+
+#### 8. **Memcached Cache** 🗃️
+- Auto-detection (socket and TCP)
+- Extension type (memcached/memcache)
+- Version information
+- Current items count
+- Hit rate statistics
+- Evictions monitoring
+- Memory usage visualization
+
+#### 9. **MySQL/MariaDB** 🐬
+- Auto-detection (socket and TCP)
+- Automatic MariaDB recognition
+- Version display
+- Uptime tracking
+- Connected threads
+- Query statistics
+- Data sent/received
+- InnoDB buffer pool information
+
+#### 10. **PostgreSQL** 🐘
+- Multi-connection attempt support
+- Server and client version
+- Database count
+- Active connections monitoring
+
+#### 11. **MongoDB** 🍃
+- Connection status
+- Version information
+- Uptime tracking
+- Connection count
+- Operation counters (insert/query/update)
+
+#### 12. **PDO Connections** 🔌
+- Support for all PDO drivers:
+  - MySQL (with MariaDB detection)
+  - PostgreSQL
+  - SQLite
+  - Oracle
+  - SQL Server
+- Individual status cards for each driver
+- Version information per connection
+
+#### 13. **SQLite3 Extension** 📦
+- Extension status
+- SQLite version
+- Version number
+
+#### 14. **PHP Extensions**
+Categorized display:
+- **Database**: mysqli, PDO variants, MongoDB, Redis, PostgreSQL, SQLite3
 - **Cache**: APCu, OPcache, Memcached, Redis
 - **Compression**: zlib, bz2, zip
 - **Encryption**: OpenSSL, Sodium, Hash
@@ -49,56 +124,56 @@ Kategorizált megjelenítés:
 - **XML/JSON**: XML, DOM, JSON, LibXML
 - **String/Text**: mbstring, iconv, intl
 - **Network**: cURL, FTP, Sockets
-- **Other**: Egyéb kiegészítők
+- **Other**: Additional extensions
 
-#### 6. **PHP Configuration** (PHP konfiguráció)
-Kategorizált direktívák:
+#### 15. **PHP Configuration**
+Categorized directives:
 - **Performance**: execution time, memory limit, upload limits
 - **Error Handling**: error reporting, logging
 - **Security**: expose_php, allow_url_fopen, disable_functions
 - **Session**: save handler, cookie settings
 
-#### 7. **Configuration Files** (Konfigurációs fájlok)
-- Betöltött php.ini fájl helye
-- További .ini fájlok listája
+#### 16. **Configuration Files**
+- Loaded php.ini file location
+- List of additional .ini files
 
-## 🚀 Használat
+## 🚀 Usage
 
-### Alapvető használat
+### Basic Usage
 
-1. Töltsd fel a `diagnostics.php` fájlt a szerveredre
-2. Nyisd meg böngészőben:
+1. Upload the `diagnostics.php` file to your server
+2. Open in your browser:
    ```
    http://your-domain.com/diagnostics.php
    ```
 
-### Helyi fejlesztés
+### Local Development
 
 ```bash
-# PHP beépített szerver indítása
+# Start PHP built-in server
 php -S localhost:8000
 
-# Böngészőben nyisd meg
+# Open in browser
 http://localhost:8000/diagnostics.php
 ```
 
-## 🔒 Biztonsági Megfontolások
+## 🔒 Security Considerations
 
-⚠️ **FONTOS**: Ez az eszköz érzékeny rendszer információkat tartalmaz!
+⚠️ **IMPORTANT**: This tool contains sensitive system information!
 
-### Éles környezetben
+### Production Environment
 
-1. **IP whitelist**: Alapértelmezetten csak localhost-ról érhető el. Éles környezetben adj hozzá IP korlátozást:
+1. **IP Whitelist**: By default, only accessible from localhost. In production, add IP restrictions:
 
 ```php
-// diagnostics.php elején módosítsd:
+// Modify at the top of diagnostics.php:
 $allowed_ips = ['127.0.0.1', '::1', 'YOUR_IP_ADDRESS'];
 if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', $allowed_ips)) {
     die('Access denied.');
 }
 ```
 
-2. **HTTP Authentication**: Adj hozzá .htaccess védelmet:
+2. **HTTP Authentication**: Add .htaccess protection:
 
 ```apache
 # .htaccess
@@ -110,78 +185,128 @@ if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', $allowed_ips)) {
 </Files>
 ```
 
-3. **Törlés használat után**: Ha már nincs rá szükség, töröld a fájlt a szerverről.
+3. **Delete After Use**: Remove the file from your server when not needed.
 
-4. **robots.txt**: Zárd ki a keresőmotoroktól:
+4. **robots.txt**: Exclude from search engines:
 
 ```
 User-agent: *
 Disallow: /diagnostics.php
 ```
 
-## 📋 Rendszerkövetelmények
+## 📋 System Requirements
 
-- PHP 7.0 vagy újabb (ajánlott: PHP 8.0+)
-- Modern böngésző (Chrome, Firefox, Safari, Edge)
+- PHP 7.0 or higher (recommended: PHP 8.0+)
+- Modern browser (Chrome, Firefox, Safari, Edge)
+- Optional: Redis, Memcached, MySQL/MariaDB, PostgreSQL, MongoDB for their respective monitoring features
 
-## 🎨 Testreszabás
+## 🎨 Customization
 
-### Színséma módosítása
+### Color Scheme
 
-A `<style>` szekcióban módosíthatod a színeket:
+Modify colors in the `<style>` section:
 
 ```css
-/* Fő gradient */
+/* Main background */
 body {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: #0f172a;
 }
 
-/* Kártya ikonok színei */
+/* Card icon colors */
 .card-icon {
     background: linear-gradient(135deg, #yourcolor1 0%, #yourcolor2 100%);
 }
 ```
 
-### Kategóriák hozzáadása
+### Adding Categories
 
-Az extension kategóriák a `getExtensionsByCategory()` függvényben módosíthatók.
+Extension categories can be modified in the `getExtensionsByCategory()` function.
 
-## 📊 Mit mutat?
+## 📊 What Does It Show?
 
-### Teljesítmény metrikák
-- Script végrehajtási idő (ms)
-- Memóriahasználat (aktuális, csúcs, limit)
-- OPcache találati arány
-- APCu cache hatékonyság
+### Performance Metrics
+- Script execution time (ms)
+- Memory usage (current, peak, limit)
+- OPcache hit rate
+- APCu cache efficiency
+- Redis hit rate and evictions
+- Memcached performance
+- System load percentages
+- Disk usage and inode consumption
 
-### Környezeti információk
-- PHP verzió és Zend verzió
-- Szerver szoftver és OS
-- Telepített extensions teljes listája
-- Összes PHP direktíva értéke
-- Betöltött konfigurációs fájlok
+### Environment Information
+- PHP version and Zend version
+- Server software and OS
+- Complete list of installed extensions
+- All PHP directive values
+- Loaded configuration files
+- All database connections and versions
+- Cache system statistics
+- Disk partition information
 
-## 🐛 Hibaelhárítás
+### Connection Detection
+The tool automatically tries multiple connection methods for:
+- **Redis**: Unix sockets (`/var/run/redis/*.sock`, `/tmp/redis.sock`) and TCP (`localhost:6379`, `127.0.0.1:6379`)
+- **Memcached**: Socket and TCP connections
+- **MySQL/MariaDB**: Unix socket (`/var/run/mysqld/mysqld.sock`, `/tmp/mysql.sock`) and TCP
+- **PostgreSQL**: Unix socket (`/var/run/postgresql`) and TCP
+- **MongoDB**: TCP connection (`localhost:27017`)
+- **PDO**: Multiple connection attempts for each driver
 
-### "Access denied" üzenet
-- Ellenőrizd, hogy localhost-ról éred-e el, vagy módosítsd az IP white-list-et
+## 🐛 Troubleshooting
 
-### OPcache/APCu információ nem jelenik meg
-- Ellenőrizd, hogy telepítve és engedélyezve van-e: `php -m | grep opcache`
+### "Access denied" message
+- Check that you're accessing from localhost, or modify the IP whitelist
 
-### Üres extension lista
-- Ellenőrizd a PHP telepítést: `php -v` és `php -m`
+### OPcache/APCu information not displayed
+- Verify installation and enable status: `php -m | grep opcache`
 
-## 📝 Licensz
+### Redis/Memcached not showing
+- Ensure the service is running: `systemctl status redis` or `systemctl status memcached`
+- Check socket permissions
+- Verify PHP extension is loaded: `php -m | grep redis`
 
-Ez egy nyílt forráskódú diagnosztikai eszköz. Szabadon használható és módosítható.
+### MySQL/MariaDB connection fails
+- Check if MySQL service is running
+- Verify socket path matches your system
+- Ensure PHP mysqli extension is loaded
 
-## 🤝 Hozzájárulás
+### Empty extension list
+- Check PHP installation: `php -v` and `php -m`
 
-Funkció javaslatok és hibajelentések közvetlenül a fejlesztő felé.
+### Disk information not showing (Linux)
+- Ensure `df` command is available
+- Check shell_exec is not disabled in PHP
+
+## 🌟 Highlights
+
+- **Auto-detection**: Automatically finds and connects to all available services
+- **Dark Mode**: Easy on the eyes with modern dark theme
+- **Zero Configuration**: Works out of the box, no setup required
+- **Comprehensive**: Monitors PHP, caching systems, databases, and system resources
+- **Universal**: English language interface for worldwide use
+- **Secure**: Localhost-only by default with configurable access control
+
+## 📝 License
+
+This is an open-source diagnostic tool. Free to use and modify.
+
+## 🤝 Contributing
+
+Feature suggestions and bug reports are welcome! Feel free to fork and submit pull requests.
+
+## 📸 Screenshots
+
+The tool provides a clean, organized view of:
+- System resources at a glance
+- Cache performance metrics
+- Database connection statuses
+- Complete PHP environment details
 
 ---
 
-**Verzió**: 1.0.0
-**Utolsó frissítés**: 2025-11-23
-**Kompatibilitás**: PHP 7.0 - 8.3+
+**Version**: 1.0.0  
+**Last Updated**: 2024-11-23  
+**Compatibility**: PHP 7.0 - 8.3+  
+**Theme**: Dark Mode 🌙  
+**Language**: English 🌍
