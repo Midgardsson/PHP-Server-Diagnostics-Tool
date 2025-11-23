@@ -110,6 +110,539 @@ function getAPCuInfo() {
 }
 
 /**
+ * Redis információk
+ */
+function getRedisInfo() {
+    if (!extension_loaded('redis')) {
+        return null;
+    }
+
+    $redis = new Redis();
+    $connected = false;
+    $connectionType = '';
+
+    // Próbálkozások különböző kapcsolódási módokkal
+    $attempts = [
+        ['type' => 'unix_socket', 'path' => '/var/run/redis/redis-server.sock'],
+        ['type' => 'unix_socket', 'path' => '/var/run/redis/redis.sock'],
+        ['type' => 'unix_socket', 'path' => '/tmp/redis.sock'],
+        ['type' => 'tcp', 'host' => '127.0.0.1', 'port' => 6379],
+        ['type' => 'tcp', 'host' => 'localhost', 'port' => 6379],
+    ];
+
+    foreach ($attempts as $attempt) {
+        try {
+            if ($attempt['type'] === 'unix_socket') {
+                if (file_exists($attempt['path'])) {
+                    $connected = @$redis->connect($attempt['path']);
+                    if ($connected) {
+                        $connectionType = 'Unix Socket: ' . $attempt['path'];
+                        break;
+                    }
+                }
+            } else {
+                $connected = @$redis->connect($attempt['host'], $attempt['port'], 1);
+                if ($connected) {
+                    $connectionType = 'TCP: ' . $attempt['host'] . ':' . $attempt['port'];
+                    break;
+                }
+            }
+        } catch (Exception $e) {
+            continue;
+        }
+    }
+
+    if (!$connected) {
+        return [
+            'enabled' => true,
+            'connected' => false,
+            'error' => 'Could not connect to Redis server'
+        ];
+    }
+
+    try {
+        $info = $redis->info();
+        $dbsize = $redis->dbSize();
+        
+        // Memory információk
+        $usedMemory = $info['used_memory'] ?? 0;
+        $maxMemory = $info['maxmemory'] ?? 0;
+        
+        // Stats
+        $hits = $info['keyspace_hits'] ?? 0;
+        $misses = $info['keyspace_misses'] ?? 0;
+        $total = $hits + $misses;
+        $hitRate = $total > 0 ? ($hits / $total) * 100 : 0;
+
+        return [
+            'enabled' => true,
+            'connected' => true,
+            'connection_type' => $connectionType,
+            'version' => $info['redis_version'] ?? 'N/A',
+            'uptime' => $info['uptime_in_seconds'] ?? 0,
+            'used_memory' => $usedMemory,
+            'max_memory' => $maxMemory,
+            'total_keys' => $dbsize,
+            'hits' => $hits,
+            'misses' => $misses,
+            'hit_rate' => $hitRate,
+            'connected_clients' => $info['connected_clients'] ?? 0,
+            'evicted_keys' => $info['evicted_keys'] ?? 0,
+            'expired_keys' => $info['expired_keys'] ?? 0,
+            'redis_mode' => $info['redis_mode'] ?? 'standalone',
+            'os' => $info['os'] ?? 'N/A',
+            'process_id' => $info['process_id'] ?? 'N/A'
+        ];
+    } catch (Exception $e) {
+        return [
+            'enabled' => true,
+            'connected' => true,
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Memcached információk
+ */
+function getMemcachedInfo() {
+    if (!extension_loaded('memcached') && !extension_loaded('memcache')) {
+        return null;
+    }
+
+    $result = [
+        'enabled' => true,
+        'connected' => false,
+        'extension' => extension_loaded('memcached') ? 'memcached' : 'memcache'
+    ];
+
+    try {
+        if (extension_loaded('memcached')) {
+            $memcached = new Memcached();
+            $servers = [
+                ['127.0.0.1', 11211],
+                ['localhost', 11211],
+                ['/var/run/memcached/memcached.sock', 0]
+            ];
+
+            foreach ($servers as $server) {
+                $memcached->addServer($server[0], $server[1]);
+            }
+
+            $stats = @$memcached->getStats();
+            if ($stats && !empty($stats)) {
+                $serverKey = array_key_first($stats);
+                $stat = $stats[$serverKey];
+                
+                if ($stat && isset($stat['pid'])) {
+                    $result['connected'] = true;
+                    $result['connection'] = $serverKey;
+                    $result['version'] = $stat['version'] ?? 'N/A';
+                    $result['uptime'] = $stat['uptime'] ?? 0;
+                    $result['curr_items'] = $stat['curr_items'] ?? 0;
+                    $result['total_items'] = $stat['total_items'] ?? 0;
+                    $result['bytes'] = $stat['bytes'] ?? 0;
+                    $result['limit_maxbytes'] = $stat['limit_maxbytes'] ?? 0;
+                    $result['get_hits'] = $stat['get_hits'] ?? 0;
+                    $result['get_misses'] = $stat['get_misses'] ?? 0;
+                    $result['evictions'] = $stat['evictions'] ?? 0;
+                    $result['curr_connections'] = $stat['curr_connections'] ?? 0;
+                    
+                    $total = $result['get_hits'] + $result['get_misses'];
+                    $result['hit_rate'] = $total > 0 ? ($result['get_hits'] / $total) * 100 : 0;
+                }
+            }
+        }
+    } catch (Exception $e) {
+        $result['error'] = $e->getMessage();
+    }
+
+    return $result;
+}
+
+/**
+ * MySQL/MariaDB információk
+ */
+function getMySQLInfo() {
+    if (!extension_loaded('mysqli')) {
+        return null;
+    }
+
+    $result = [
+        'enabled' => true,
+        'connected' => false
+    ];
+
+    $attempts = [
+        ['host' => 'localhost', 'socket' => '/var/run/mysqld/mysqld.sock'],
+        ['host' => '127.0.0.1', 'socket' => null],
+        ['host' => 'localhost', 'socket' => '/tmp/mysql.sock'],
+    ];
+
+    foreach ($attempts as $attempt) {
+        try {
+            $mysqli = @new mysqli($attempt['host'], '', '', '', 0, $attempt['socket']);
+            
+            if (!$mysqli->connect_error) {
+                $result['connected'] = true;
+                $result['connection'] = $attempt['socket'] ?: $attempt['host'];
+                
+                // Verzió
+                $version = $mysqli->get_server_info();
+                $result['version'] = $version;
+                $result['is_mariadb'] = stripos($version, 'mariadb') !== false;
+                
+                // Status változók
+                $status = [];
+                if ($res = $mysqli->query("SHOW GLOBAL STATUS")) {
+                    while ($row = $res->fetch_assoc()) {
+                        $status[$row['Variable_name']] = $row['Value'];
+                    }
+                    $res->close();
+                }
+                
+                $result['uptime'] = $status['Uptime'] ?? 0;
+                $result['threads_connected'] = $status['Threads_connected'] ?? 0;
+                $result['questions'] = $status['Questions'] ?? 0;
+                $result['queries'] = $status['Queries'] ?? 0;
+                $result['bytes_received'] = $status['Bytes_received'] ?? 0;
+                $result['bytes_sent'] = $status['Bytes_sent'] ?? 0;
+                
+                // InnoDB buffer pool ha van
+                if (isset($status['Innodb_buffer_pool_pages_total'])) {
+                    $result['innodb_buffer_pool_size'] = ($status['Innodb_buffer_pool_pages_total'] ?? 0) * 16384; // page size 16KB
+                    $result['innodb_buffer_pool_pages_free'] = $status['Innodb_buffer_pool_pages_free'] ?? 0;
+                }
+                
+                $mysqli->close();
+                break;
+            }
+        } catch (Exception $e) {
+            continue;
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * PostgreSQL információk
+ */
+function getPostgreSQLInfo() {
+    if (!extension_loaded('pgsql')) {
+        return null;
+    }
+
+    $result = [
+        'enabled' => true,
+        'connected' => false
+    ];
+
+    $attempts = [
+        "host=localhost port=5432 dbname=postgres user=postgres",
+        "host=127.0.0.1 port=5432 dbname=postgres",
+        "host=/var/run/postgresql dbname=postgres"
+    ];
+
+    foreach ($attempts as $connstr) {
+        try {
+            $conn = @pg_connect($connstr);
+            if ($conn) {
+                $result['connected'] = true;
+                $result['connection'] = $connstr;
+                
+                // Verzió
+                $version = pg_version($conn);
+                $result['server_version'] = $version['server'] ?? 'N/A';
+                $result['client_version'] = $version['client'] ?? 'N/A';
+                
+                // Adatbázisok száma
+                $res = @pg_query($conn, "SELECT count(*) as db_count FROM pg_database WHERE datistemplate = false");
+                if ($res) {
+                    $row = pg_fetch_assoc($res);
+                    $result['database_count'] = $row['db_count'];
+                }
+                
+                // Kapcsolatok
+                $res = @pg_query($conn, "SELECT count(*) as conn_count FROM pg_stat_activity");
+                if ($res) {
+                    $row = pg_fetch_assoc($res);
+                    $result['active_connections'] = $row['conn_count'];
+                }
+                
+                pg_close($conn);
+                break;
+            }
+        } catch (Exception $e) {
+            continue;
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * PDO kapcsolatok információi
+ */
+function getPDOInfo() {
+    $pdoDrivers = [];
+    
+    if (extension_loaded('pdo')) {
+        $availableDrivers = PDO::getAvailableDrivers();
+        
+        foreach ($availableDrivers as $driver) {
+            $driverInfo = [
+                'driver' => $driver,
+                'available' => true,
+                'connected' => false
+            ];
+            
+            // MySQL PDO
+            if ($driver === 'mysql') {
+                $attempts = [
+                    ['dsn' => 'mysql:host=localhost;charset=utf8mb4', 'socket' => '/var/run/mysqld/mysqld.sock'],
+                    ['dsn' => 'mysql:host=127.0.0.1;charset=utf8mb4', 'socket' => null],
+                    ['dsn' => 'mysql:unix_socket=/tmp/mysql.sock;charset=utf8mb4', 'socket' => '/tmp/mysql.sock'],
+                ];
+                
+                foreach ($attempts as $attempt) {
+                    try {
+                        $dsn = $attempt['dsn'];
+                        $pdo = new PDO($dsn, '', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+                        $driverInfo['connected'] = true;
+                        $driverInfo['connection'] = $attempt['socket'] ?: 'TCP';
+                        $version = $pdo->query('SELECT VERSION()')->fetchColumn();
+                        $driverInfo['version'] = $version;
+                        $driverInfo['is_mariadb'] = stripos($version, 'mariadb') !== false;
+                        break;
+                    } catch (Exception $e) {
+                        continue;
+                    }
+                }
+            }
+            
+            // PostgreSQL PDO
+            if ($driver === 'pgsql') {
+                $attempts = [
+                    'pgsql:host=localhost;port=5432;dbname=postgres',
+                    'pgsql:host=127.0.0.1;port=5432;dbname=postgres',
+                    'pgsql:host=/var/run/postgresql;dbname=postgres'
+                ];
+                
+                foreach ($attempts as $dsn) {
+                    try {
+                        $pdo = new PDO($dsn, 'postgres', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+                        $driverInfo['connected'] = true;
+                        $driverInfo['connection'] = $dsn;
+                        $version = $pdo->query('SELECT version()')->fetchColumn();
+                        $driverInfo['version'] = explode(' on ', $version)[0];
+                        break;
+                    } catch (Exception $e) {
+                        continue;
+                    }
+                }
+            }
+            
+            // SQLite PDO
+            if ($driver === 'sqlite') {
+                try {
+                    $pdo = new PDO('sqlite::memory:');
+                    $driverInfo['connected'] = true;
+                    $driverInfo['connection'] = 'In-Memory';
+                    $version = $pdo->query('SELECT sqlite_version()')->fetchColumn();
+                    $driverInfo['version'] = $version;
+                } catch (Exception $e) {
+                    $driverInfo['error'] = $e->getMessage();
+                }
+            }
+            
+            $pdoDrivers[] = $driverInfo;
+        }
+    }
+    
+    return !empty($pdoDrivers) ? $pdoDrivers : null;
+}
+
+/**
+ * SQLite3 információk
+ */
+function getSQLite3Info() {
+    if (!extension_loaded('sqlite3')) {
+        return null;
+    }
+    
+    try {
+        $version = SQLite3::version();
+        return [
+            'enabled' => true,
+            'version' => $version['versionString'],
+            'version_number' => $version['versionNumber']
+        ];
+    } catch (Exception $e) {
+        return [
+            'enabled' => true,
+            'error' => $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * MongoDB információk
+ */
+function getMongoDBInfo() {
+    if (!extension_loaded('mongodb')) {
+        return null;
+    }
+
+    $result = [
+        'enabled' => true,
+        'connected' => false
+    ];
+
+    try {
+        $manager = new MongoDB\Driver\Manager("mongodb://localhost:27017");
+        $command = new MongoDB\Driver\Command(['ping' => 1]);
+        $manager->executeCommand('admin', $command);
+        
+        $result['connected'] = true;
+        $result['connection'] = 'localhost:27017';
+        
+        // Server status
+        $command = new MongoDB\Driver\Command(['serverStatus' => 1]);
+        $cursor = $manager->executeCommand('admin', $command);
+        $status = current($cursor->toArray());
+        
+        if ($status) {
+            $result['version'] = $status->version ?? 'N/A';
+            $result['uptime'] = $status->uptime ?? 0;
+            $result['connections'] = $status->connections->current ?? 0;
+            $result['opcounters'] = [
+                'insert' => $status->opcounters->insert ?? 0,
+                'query' => $status->opcounters->query ?? 0,
+                'update' => $status->opcounters->update ?? 0,
+                'delete' => $status->opcounters->delete ?? 0,
+            ];
+        }
+    } catch (Exception $e) {
+        $result['error'] = $e->getMessage();
+    }
+
+    return $result;
+}
+
+/**
+ * Lemez használat információk
+ */
+function getDiskInfo() {
+    $disks = [];
+    
+    // Linux rendszeren df parancs
+    if (PHP_OS_FAMILY === 'Linux' || PHP_OS_FAMILY === 'Darwin') {
+        $output = @shell_exec('df -h 2>/dev/null');
+        if ($output) {
+            $lines = explode("\n", trim($output));
+            array_shift($lines); // Header sor
+            
+            foreach ($lines as $line) {
+                if (empty(trim($line))) continue;
+                
+                $parts = preg_split('/\s+/', $line);
+                if (count($parts) >= 6) {
+                    $filesystem = $parts[0];
+                    // Kihagyjuk a temp filesystemeket és loopokat
+                    if (strpos($filesystem, 'tmpfs') !== false || 
+                        strpos($filesystem, 'loop') !== false ||
+                        strpos($filesystem, 'devtmpfs') !== false) {
+                        continue;
+                    }
+                    
+                    $disks[] = [
+                        'filesystem' => $filesystem,
+                        'size' => $parts[1],
+                        'used' => $parts[2],
+                        'available' => $parts[3],
+                        'use_percent' => rtrim($parts[4], '%'),
+                        'mounted' => $parts[5]
+                    ];
+                }
+            }
+        }
+        
+        // Inode információ
+        $inodeOutput = @shell_exec('df -i 2>/dev/null');
+        if ($inodeOutput) {
+            $lines = explode("\n", trim($inodeOutput));
+            array_shift($lines);
+            $inodeIndex = 0;
+            
+            foreach ($lines as $line) {
+                if (empty(trim($line))) continue;
+                
+                $parts = preg_split('/\s+/', $line);
+                if (count($parts) >= 6 && isset($disks[$inodeIndex])) {
+                    $disks[$inodeIndex]['inode_use_percent'] = rtrim($parts[4], '%');
+                    $inodeIndex++;
+                }
+            }
+        }
+    } else {
+        // Windows esetén
+        $disks[] = [
+            'filesystem' => 'C:',
+            'total' => disk_total_space('C:'),
+            'free' => disk_free_space('C:'),
+            'used' => disk_total_space('C:') - disk_free_space('C:'),
+            'use_percent' => round((1 - disk_free_space('C:') / disk_total_space('C:')) * 100, 2)
+        ];
+    }
+    
+    return $disks;
+}
+
+/**
+ * System Load és CPU információk
+ */
+function getSystemLoad() {
+    $info = [
+        'cpu_count' => 1
+    ];
+    
+    // CPU count
+    if (function_exists('shell_exec')) {
+        if (PHP_OS_FAMILY === 'Linux') {
+            $cpuinfo = @shell_exec('nproc 2>/dev/null');
+            if ($cpuinfo) {
+                $info['cpu_count'] = (int)trim($cpuinfo);
+            }
+        } elseif (PHP_OS_FAMILY === 'Darwin') {
+            $cpuinfo = @shell_exec('sysctl -n hw.ncpu 2>/dev/null');
+            if ($cpuinfo) {
+                $info['cpu_count'] = (int)trim($cpuinfo);
+            }
+        }
+    }
+    
+    // Load average (Linux/Unix only)
+    if (function_exists('sys_getloadavg')) {
+        $load = sys_getloadavg();
+        $info['load_1min'] = $load[0];
+        $info['load_5min'] = $load[1];
+        $info['load_15min'] = $load[2];
+        $info['load_percent_1min'] = ($load[0] / $info['cpu_count']) * 100;
+    }
+    
+    // Uptime
+    if (PHP_OS_FAMILY === 'Linux') {
+        $uptime = @shell_exec('cat /proc/uptime 2>/dev/null');
+        if ($uptime) {
+            $info['uptime_seconds'] = (int)explode(' ', $uptime)[0];
+        }
+    }
+    
+    return $info;
+}
+
+/**
  * Memória információk
  */
 function getMemoryInfo() {
@@ -180,6 +713,15 @@ $phpVersion = phpversion();
 $extensions = getExtensionsByCategory();
 $opcache = getOPcacheInfo();
 $apcu = getAPCuInfo();
+$redis = getRedisInfo();
+$memcached = getMemcachedInfo();
+$mysql = getMySQLInfo();
+$postgresql = getPostgreSQLInfo();
+$mongodb = getMongoDBInfo();
+$pdo = getPDOInfo();
+$sqlite3 = getSQLite3Info();
+$disks = getDiskInfo();
+$systemLoad = getSystemLoad();
 $memory = getMemoryInfo();
 $configFiles = getConfigFiles();
 $directives = getImportantDirectives();
@@ -209,7 +751,7 @@ $serverInfo = [
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #0f172a;
             padding: 20px;
             min-height: 100vh;
         }
@@ -220,27 +762,27 @@ $serverInfo = [
         }
 
         .header {
-            background: white;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
             padding: 30px;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-            margin-bottom: 30px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            border: 1px solid #334155;
             text-align: center;
         }
 
         .header h1 {
-            color: #1f2937;
-            font-size: 2.5em;
+            color: #f1f5f9;
             margin-bottom: 10px;
+            font-size: 2em;
         }
 
         .php-version {
             display: inline-block;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
             color: white;
-            padding: 10px 30px;
-            border-radius: 50px;
-            font-size: 1.3em;
+            padding: 8px 20px;
+            border-radius: 5px;
             font-weight: bold;
             margin-top: 10px;
         }
@@ -253,49 +795,48 @@ $serverInfo = [
         }
 
         .card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-            transition: transform 0.2s, box-shadow 0.2s;
+            background: #1e293b;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            border: 1px solid #334155;
         }
 
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 15px 50px rgba(0,0,0,0.15);
+        .card.full-width {
+            grid-column: 1 / -1;
         }
 
         .card-header {
+            background: linear-gradient(135deg, #334155 0%, #1e293b 100%);
+            padding: 20px;
             display: flex;
             align-items: center;
-            margin-bottom: 20px;
-            padding-bottom: 15px;
-            border-bottom: 2px solid #f3f4f6;
+            gap: 15px;
+            border-bottom: 1px solid #475569;
         }
 
         .card-icon {
-            width: 40px;
-            height: 40px;
-            border-radius: 8px;
+            width: 50px;
+            height: 50px;
+            border-radius: 5px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 20px;
-            margin-right: 15px;
+            font-size: 24px;
         }
 
         .card-title {
             font-size: 1.3em;
-            color: #1f2937;
             font-weight: 600;
+            color: #f1f5f9;
         }
 
         .stat-row {
+            padding: 15px 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 12px 0;
-            border-bottom: 1px solid #f3f4f6;
+            border-bottom: 1px solid #334155;
         }
 
         .stat-row:last-child {
@@ -303,54 +844,67 @@ $serverInfo = [
         }
 
         .stat-label {
-            color: #6b7280;
+            color: #94a3b8;
             font-weight: 500;
         }
 
         .stat-value {
-            color: #1f2937;
+            color: #e2e8f0;
             font-weight: 600;
-            text-align: right;
         }
 
         .badge {
-            display: inline-block;
             padding: 4px 12px;
-            border-radius: 12px;
+            border-radius: 5px;
             font-size: 0.85em;
             font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge.success {
+            background: #10b981;
             color: white;
         }
 
-        .badge.success { background: #10b981; }
-        .badge.error { background: #ef4444; }
-        .badge.warning { background: #f59e0b; }
-        .badge.info { background: #6366f1; }
-
-        .extension-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-            gap: 8px;
-            margin-top: 15px;
+        .badge.error {
+            background: #ef4444;
+            color: white;
         }
 
-        .extension-item {
-            background: #f3f4f6;
-            padding: 8px 12px;
-            border-radius: 6px;
+        .badge.warning {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .metric-box {
+            padding: 15px 20px;
+            border-bottom: 1px solid #334155;
+        }
+
+        .metric-box:last-child {
+            border-bottom: none;
+        }
+
+        .metric-title {
+            color: #94a3b8;
             font-size: 0.9em;
-            text-align: center;
-            color: #374151;
+            margin-bottom: 5px;
             font-weight: 500;
         }
 
+        .metric-value {
+            color: #f1f5f9;
+            font-size: 1.5em;
+            font-weight: 600;
+        }
+
         .progress-bar {
-            background: #e5e7eb;
-            height: 25px;
-            border-radius: 12px;
+            width: 100%;
+            height: 30px;
+            background: #334155;
+            border-radius: 5px;
             overflow: hidden;
-            position: relative;
-            margin-top: 8px;
+            margin-top: 10px;
         }
 
         .progress-fill {
@@ -361,8 +915,8 @@ $serverInfo = [
             justify-content: center;
             color: white;
             font-weight: 600;
-            font-size: 0.85em;
-            transition: width 0.3s;
+            font-size: 0.9em;
+            transition: width 0.3s ease;
         }
 
         .progress-fill.warning {
@@ -373,57 +927,46 @@ $serverInfo = [
             background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
         }
 
-        .metric-box {
-            background: #f9fafb;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 10px;
-        }
-
-        .metric-box:last-child {
-            margin-bottom: 0;
-        }
-
-        .metric-title {
-            font-size: 0.85em;
-            color: #6b7280;
-            margin-bottom: 8px;
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-
-        .metric-value {
-            font-size: 1.8em;
-            color: #1f2937;
-            font-weight: 700;
-        }
-
-        .code-block {
-            background: #1f2937;
-            color: #10b981;
-            padding: 15px;
-            border-radius: 8px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-            overflow-x: auto;
-            margin-top: 10px;
-        }
-
-        .full-width {
-            grid-column: 1 / -1;
-        }
-
         .category-section {
-            margin-bottom: 20px;
+            padding: 20px;
+            border-bottom: 1px solid #334155;
+        }
+
+        .category-section:last-child {
+            border-bottom: none;
         }
 
         .category-title {
-            color: #6366f1;
+            color: #3b82f6;
             font-weight: 600;
+            margin-bottom: 15px;
             font-size: 1.1em;
-            margin-bottom: 10px;
-            padding-bottom: 8px;
-            border-bottom: 2px solid #e5e7eb;
+        }
+
+        .extension-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+        }
+
+        .extension-item {
+            background: #334155;
+            padding: 8px 12px;
+            border-radius: 5px;
+            color: #e2e8f0;
+            font-size: 0.9em;
+            border: 1px solid #475569;
+        }
+
+        .code-block {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #10b981;
+            overflow-x: auto;
+            border: 1px solid #334155;
         }
 
         @media (max-width: 768px) {
@@ -488,6 +1031,83 @@ $serverInfo = [
                 </div>
                 <?php endforeach; ?>
             </div>
+
+            <!-- System Load -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon" style="background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);">
+                        📊
+                    </div>
+                    <div class="card-title">System Load</div>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">CPU Cores:</span>
+                    <span class="stat-value"><?= $systemLoad['cpu_count'] ?></span>
+                </div>
+                <?php if (isset($systemLoad['load_1min'])): ?>
+                <div class="stat-row">
+                    <span class="stat-label">Load Average (1min):</span>
+                    <span class="stat-value"><?= number_format($systemLoad['load_1min'], 2) ?> (<?= number_format($systemLoad['load_percent_1min'], 1) ?>%)</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Load Average (5min):</span>
+                    <span class="stat-value"><?= number_format($systemLoad['load_5min'], 2) ?></span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Load Average (15min):</span>
+                    <span class="stat-value"><?= number_format($systemLoad['load_15min'], 2) ?></span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill <?= $systemLoad['load_percent_1min'] > 90 ? 'danger' : ($systemLoad['load_percent_1min'] > 75 ? 'warning' : '') ?>"
+                         style="width: <?= min($systemLoad['load_percent_1min'], 100) ?>%">
+                        <?= number_format($systemLoad['load_percent_1min'], 1) ?>%
+                    </div>
+                </div>
+                <?php endif; ?>
+                <?php if (isset($systemLoad['uptime_seconds'])): ?>
+                <div class="stat-row">
+                    <span class="stat-label">System Uptime:</span>
+                    <span class="stat-value"><?= gmdate('H:i:s', $systemLoad['uptime_seconds']) ?> (<?= number_format($systemLoad['uptime_seconds'] / 86400, 1) ?> days)</span>
+                </div>
+                <?php endif; ?>
+            </div>
+
+            <!-- Disk Usage -->
+            <?php if (!empty($disks)): ?>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon" style="background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);">
+                        💾
+                    </div>
+                    <div class="card-title">Disk Usage</div>
+                </div>
+                <?php foreach ($disks as $disk): ?>
+                <div class="metric-box" style="margin-bottom: 15px;">
+                    <div class="metric-title"><?= htmlspecialchars($disk['filesystem']) ?> → <?= htmlspecialchars($disk['mounted'] ?? 'N/A') ?></div>
+                    <div class="stat-row">
+                        <span class="stat-label">Size:</span>
+                        <span class="stat-value"><?= $disk['size'] ?? formatBytes($disk['total']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Used / Available:</span>
+                        <span class="stat-value"><?= $disk['used'] ?? formatBytes($disk['used']) ?> / <?= $disk['available'] ?? formatBytes($disk['free']) ?></span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill <?= $disk['use_percent'] > 90 ? 'danger' : ($disk['use_percent'] > 80 ? 'warning' : '') ?>"
+                             style="width: <?= $disk['use_percent'] ?>%">
+                            <?= $disk['use_percent'] ?>%
+                        </div>
+                    </div>
+                    <?php if (isset($disk['inode_use_percent'])): ?>
+                    <div class="stat-row" style="margin-top: 8px;">
+                        <span class="stat-label">Inode Usage:</span>
+                        <span class="stat-value"><?= $disk['inode_use_percent'] ?>%</span>
+                    </div>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
 
             <!-- OPcache Status -->
             <?php if ($opcache): ?>
@@ -590,6 +1210,424 @@ $serverInfo = [
                         <?= number_format($memPercent, 1) ?>%
                     </div>
                 </div>
+            </div>
+            <?php endif; ?>
+
+            <!-- Redis Cache -->
+            <?php if ($redis): ?>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon" style="background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%);">
+                        🔴
+                    </div>
+                    <div class="card-title">Redis Cache</div>
+                </div>
+                <?php if ($redis['connected']): ?>
+                    <?php if (isset($redis['error'])): ?>
+                        <div class="stat-row">
+                            <span class="stat-label">Status:</span>
+                            <span class="badge error">Error</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Message:</span>
+                            <span class="stat-value"><?= htmlspecialchars($redis['error']) ?></span>
+                        </div>
+                    <?php else: ?>
+                        <div class="stat-row">
+                            <span class="stat-label">Status:</span>
+                            <span class="badge success">Connected</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Connection:</span>
+                            <span class="stat-value"><?= htmlspecialchars($redis['connection_type']) ?></span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Version:</span>
+                            <span class="stat-value"><?= htmlspecialchars($redis['version']) ?></span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Uptime:</span>
+                            <span class="stat-value"><?= gmdate('H:i:s', $redis['uptime']) ?> (<?= number_format($redis['uptime'] / 86400, 1) ?> days)</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Total Keys:</span>
+                            <span class="stat-value"><?= number_format($redis['total_keys']) ?></span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Hit Rate:</span>
+                            <span class="stat-value"><?= number_format($redis['hit_rate'], 2) ?>%</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Hits / Misses:</span>
+                            <span class="stat-value"><?= number_format($redis['hits']) ?> / <?= number_format($redis['misses']) ?></span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Connected Clients:</span>
+                            <span class="stat-value"><?= number_format($redis['connected_clients']) ?></span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Evicted Keys:</span>
+                            <span class="stat-value"><?= number_format($redis['evicted_keys']) ?></span>
+                        </div>
+                        <?php if ($redis['max_memory'] > 0): ?>
+                            <?php
+                            $memPercent = ($redis['used_memory'] / $redis['max_memory']) * 100;
+                            ?>
+                            <div class="stat-row">
+                                <span class="stat-label">Memory Usage:</span>
+                                <span class="stat-value"><?= formatBytes($redis['used_memory']) ?> / <?= formatBytes($redis['max_memory']) ?></span>
+                            </div>
+                            <div class="progress-bar">
+                                <div class="progress-fill <?= $memPercent > 90 ? 'danger' : ($memPercent > 75 ? 'warning' : '') ?>"
+                                     style="width: <?= $memPercent ?>%">
+                                    <?= number_format($memPercent, 1) ?>%
+                                </div>
+                            </div>
+                        <?php else: ?>
+                            <div class="stat-row">
+                                <span class="stat-label">Memory Usage:</span>
+                                <span class="stat-value"><?= formatBytes($redis['used_memory']) ?> (no limit)</span>
+                            </div>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Status:</span>
+                        <span class="badge error">Not Connected</span>
+                    </div>
+                    <?php if (isset($redis['error'])): ?>
+                        <div class="stat-row">
+                            <span class="stat-label">Error:</span>
+                            <span class="stat-value"><?= htmlspecialchars($redis['error']) ?></span>
+                        </div>
+                    <?php endif; ?>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
+            <!-- Memcached Cache -->
+            <?php if ($memcached): ?>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon" style="background: linear-gradient(135deg, #f97316 0%, #ea580c 100%);">
+                        🗃️
+                    </div>
+                    <div class="card-title">Memcached Cache</div>
+                </div>
+                <?php if ($memcached['connected']): ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Status:</span>
+                        <span class="badge success">Connected</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Extension:</span>
+                        <span class="stat-value"><?= htmlspecialchars($memcached['extension']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Connection:</span>
+                        <span class="stat-value"><?= htmlspecialchars($memcached['connection']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Version:</span>
+                        <span class="stat-value"><?= htmlspecialchars($memcached['version']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Uptime:</span>
+                        <span class="stat-value"><?= gmdate('H:i:s', $memcached['uptime']) ?> (<?= number_format($memcached['uptime'] / 86400, 1) ?> days)</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Current Items:</span>
+                        <span class="stat-value"><?= number_format($memcached['curr_items']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Hit Rate:</span>
+                        <span class="stat-value"><?= number_format($memcached['hit_rate'], 2) ?>%</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Hits / Misses:</span>
+                        <span class="stat-value"><?= number_format($memcached['get_hits']) ?> / <?= number_format($memcached['get_misses']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Evictions:</span>
+                        <span class="stat-value"><?= number_format($memcached['evictions']) ?></span>
+                    </div>
+                    <?php if ($memcached['limit_maxbytes'] > 0): ?>
+                        <?php $memPercent = ($memcached['bytes'] / $memcached['limit_maxbytes']) * 100; ?>
+                        <div class="stat-row">
+                            <span class="stat-label">Memory Usage:</span>
+                            <span class="stat-value"><?= formatBytes($memcached['bytes']) ?> / <?= formatBytes($memcached['limit_maxbytes']) ?></span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill <?= $memPercent > 90 ? 'danger' : ($memPercent > 75 ? 'warning' : '') ?>"
+                                 style="width: <?= $memPercent ?>%">
+                                <?= number_format($memPercent, 1) ?>%
+                            </div>
+                        </div>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Status:</span>
+                        <span class="badge error">Not Connected</span>
+                    </div>
+                    <?php if (isset($memcached['error'])): ?>
+                        <div class="stat-row">
+                            <span class="stat-label">Error:</span>
+                            <span class="stat-value"><?= htmlspecialchars($memcached['error']) ?></span>
+                        </div>
+                    <?php endif; ?>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
+            <!-- MySQL/MariaDB -->
+            <?php if ($mysql): ?>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon" style="background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%);">
+                        🐬
+                    </div>
+                    <div class="card-title"><?= ($mysql['connected'] && isset($mysql['is_mariadb']) && $mysql['is_mariadb']) ? 'MariaDB' : 'MySQL' ?></div>
+                </div>
+                <?php if ($mysql['connected']): ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Status:</span>
+                        <span class="badge success">Connected</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Connection:</span>
+                        <span class="stat-value"><?= htmlspecialchars($mysql['connection']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Version:</span>
+                        <span class="stat-value"><?= htmlspecialchars($mysql['version']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Uptime:</span>
+                        <span class="stat-value"><?= gmdate('H:i:s', $mysql['uptime']) ?> (<?= number_format($mysql['uptime'] / 86400, 1) ?> days)</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Connected Threads:</span>
+                        <span class="stat-value"><?= number_format($mysql['threads_connected']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Questions:</span>
+                        <span class="stat-value"><?= number_format($mysql['questions']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Data Sent / Received:</span>
+                        <span class="stat-value"><?= formatBytes($mysql['bytes_sent']) ?> / <?= formatBytes($mysql['bytes_received']) ?></span>
+                    </div>
+                    <?php if (isset($mysql['innodb_buffer_pool_size'])): ?>
+                        <div class="stat-row">
+                            <span class="stat-label">InnoDB Buffer Pool:</span>
+                            <span class="stat-value"><?= formatBytes($mysql['innodb_buffer_pool_size']) ?></span>
+                        </div>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Status:</span>
+                        <span class="badge error">Not Connected</span>
+                    </div>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
+            <!-- PostgreSQL -->
+            <?php if ($postgresql): ?>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon" style="background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);">
+                        🐘
+                    </div>
+                    <div class="card-title">PostgreSQL</div>
+                </div>
+                <?php if ($postgresql['connected']): ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Status:</span>
+                        <span class="badge success">Connected</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Server Version:</span>
+                        <span class="stat-value"><?= htmlspecialchars($postgresql['server_version']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Client Version:</span>
+                        <span class="stat-value"><?= htmlspecialchars($postgresql['client_version']) ?></span>
+                    </div>
+                    <?php if (isset($postgresql['database_count'])): ?>
+                        <div class="stat-row">
+                            <span class="stat-label">Databases:</span>
+                            <span class="stat-value"><?= number_format($postgresql['database_count']) ?></span>
+                        </div>
+                    <?php endif; ?>
+                    <?php if (isset($postgresql['active_connections'])): ?>
+                        <div class="stat-row">
+                            <span class="stat-label">Active Connections:</span>
+                            <span class="stat-value"><?= number_format($postgresql['active_connections']) ?></span>
+                        </div>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Status:</span>
+                        <span class="badge error">Not Connected</span>
+                    </div>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
+            <!-- MongoDB -->
+            <?php if ($mongodb): ?>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+                        🍃
+                    </div>
+                    <div class="card-title">MongoDB</div>
+                </div>
+                <?php if ($mongodb['connected']): ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Status:</span>
+                        <span class="badge success">Connected</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Connection:</span>
+                        <span class="stat-value"><?= htmlspecialchars($mongodb['connection']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Version:</span>
+                        <span class="stat-value"><?= htmlspecialchars($mongodb['version']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Uptime:</span>
+                        <span class="stat-value"><?= gmdate('H:i:s', $mongodb['uptime']) ?> (<?= number_format($mongodb['uptime'] / 86400, 1) ?> days)</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Connections:</span>
+                        <span class="stat-value"><?= number_format($mongodb['connections']) ?></span>
+                    </div>
+                    <?php if (isset($mongodb['opcounters'])): ?>
+                        <div class="stat-row">
+                            <span class="stat-label">Operations:</span>
+                            <span class="stat-value">
+                                Insert: <?= number_format($mongodb['opcounters']['insert']) ?> | 
+                                Query: <?= number_format($mongodb['opcounters']['query']) ?> | 
+                                Update: <?= number_format($mongodb['opcounters']['update']) ?>
+                            </span>
+                        </div>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Status:</span>
+                        <span class="badge error">Not Connected</span>
+                    </div>
+                    <?php if (isset($mongodb['error'])): ?>
+                        <div class="stat-row">
+                            <span class="stat-label">Error:</span>
+                            <span class="stat-value"><?= htmlspecialchars($mongodb['error']) ?></span>
+                        </div>
+                    <?php endif; ?>
+                <?php endif; ?>
+            </div>
+            <?php endif; ?>
+
+            <!-- PDO Connections -->
+            <?php if ($pdo): ?>
+            <div class="card full-width">
+                <div class="card-header">
+                    <div class="card-icon" style="background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%);">
+                        🔌
+                    </div>
+                    <div class="card-title">PDO Connections</div>
+                </div>
+                <div class="grid" style="padding: 0;">
+                    <?php foreach ($pdo as $driver): ?>
+                    <div class="card" style="margin: 20px;">
+                        <div class="metric-box">
+                            <div class="metric-title">
+                                <?php
+                                $driverNames = [
+                                    'mysql' => 'MySQL (PDO)',
+                                    'pgsql' => 'PostgreSQL (PDO)',
+                                    'sqlite' => 'SQLite (PDO)',
+                                    'oci' => 'Oracle (PDO)',
+                                    'sqlsrv' => 'SQL Server (PDO)',
+                                ];
+                                echo $driverNames[$driver['driver']] ?? strtoupper($driver['driver']) . ' (PDO)';
+                                ?>
+                            </div>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Driver:</span>
+                            <span class="stat-value"><?= htmlspecialchars($driver['driver']) ?></span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Status:</span>
+                            <?php if ($driver['connected']): ?>
+                                <span class="badge success">Connected</span>
+                            <?php else: ?>
+                                <span class="badge error">Not Connected</span>
+                            <?php endif; ?>
+                        </div>
+                        <?php if ($driver['connected']): ?>
+                            <?php if (isset($driver['connection'])): ?>
+                                <div class="stat-row">
+                                    <span class="stat-label">Connection:</span>
+                                    <span class="stat-value"><?= htmlspecialchars($driver['connection']) ?></span>
+                                </div>
+                            <?php endif; ?>
+                            <?php if (isset($driver['version'])): ?>
+                                <div class="stat-row">
+                                    <span class="stat-label">Version:</span>
+                                    <span class="stat-value">
+                                        <?= htmlspecialchars($driver['version']) ?>
+                                        <?php if (isset($driver['is_mariadb']) && $driver['is_mariadb']): ?>
+                                            <span class="badge success" style="margin-left: 10px;">MariaDB</span>
+                                        <?php endif; ?>
+                                    </span>
+                                </div>
+                            <?php endif; ?>
+                        <?php endif; ?>
+                        <?php if (isset($driver['error'])): ?>
+                            <div class="stat-row">
+                                <span class="stat-label">Error:</span>
+                                <span class="stat-value"><?= htmlspecialchars($driver['error']) ?></span>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+
+            <!-- SQLite3 Extension -->
+            <?php if ($sqlite3): ?>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon" style="background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);">
+                        📦
+                    </div>
+                    <div class="card-title">SQLite3 Extension</div>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Status:</span>
+                    <span class="badge success">Enabled</span>
+                </div>
+                <?php if (isset($sqlite3['version'])): ?>
+                    <div class="stat-row">
+                        <span class="stat-label">SQLite Version:</span>
+                        <span class="stat-value"><?= htmlspecialchars($sqlite3['version']) ?></span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Version Number:</span>
+                        <span class="stat-value"><?= htmlspecialchars($sqlite3['version_number']) ?></span>
+                    </div>
+                <?php endif; ?>
+                <?php if (isset($sqlite3['error'])): ?>
+                    <div class="stat-row">
+                        <span class="stat-label">Error:</span>
+                        <span class="stat-value"><?= htmlspecialchars($sqlite3['error']) ?></span>
+                    </div>
+                <?php endif; ?>
             </div>
             <?php endif; ?>
         </div>
