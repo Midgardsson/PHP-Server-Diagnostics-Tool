@@ -32,6 +32,93 @@ function formatBytes($bytes, $precision = 2) {
 }
 
 /**
+ * Check if PHP version is End of Life
+ */
+function isPHPVersionEOL($version) {
+    $eolVersions = [
+        '5.6' => '2018-12-31',
+        '7.0' => '2019-01-10',
+        '7.1' => '2019-12-01',
+        '7.2' => '2020-11-30',
+        '7.3' => '2021-12-06',
+        '7.4' => '2022-11-28',
+        '8.0' => '2023-11-26',
+        '8.1' => '2025-11-25', // Active support ended 2023-11-25, security until 2025
+    ];
+
+    $majorMinor = substr($version, 0, 3);
+
+    if (isset($eolVersions[$majorMinor])) {
+        $eolDate = strtotime($eolVersions[$majorMinor]);
+        return time() > $eolDate;
+    }
+
+    // If version is older than 5.6, it's definitely EOL
+    if (version_compare($version, '5.6.0', '<')) {
+        return true;
+    }
+
+    return false; // Newer versions we don't know about yet
+}
+
+/**
+ * Check if directive value is insecure
+ */
+function isDirectiveInsecure($directive, $value) {
+    $insecureSettings = [
+        'allow_url_include' => ['On', '1'],
+        'expose_php' => ['On', '1'],
+        'display_errors' => ['On', '1'], // In production
+        'register_globals' => ['On', '1'],
+        'magic_quotes_gpc' => ['On', '1'],
+        'safe_mode' => ['Off', '0'], // Deprecated but if exists and off
+    ];
+
+    if (isset($insecureSettings[$directive])) {
+        return in_array($value, $insecureSettings[$directive]);
+    }
+
+    // Special checks
+    if ($directive === 'disable_functions' && (empty($value) || $value === false || $value === '')) {
+        return true; // No disabled functions is risky
+    }
+
+    if ($directive === 'open_basedir' && (empty($value) || $value === false || $value === '')) {
+        return true; // No open_basedir restriction
+    }
+
+    return false;
+}
+
+/**
+ * Check if extension is deprecated or dangerous
+ */
+function isExtensionProblematic($extension) {
+    $deprecated = [
+        'mcrypt' => 'Deprecated since PHP 7.1, removed in PHP 7.2',
+        'mysql' => 'Removed in PHP 7.0, use mysqli or PDO',
+        'ereg' => 'Removed in PHP 7.0, use preg_* functions',
+        'mssql' => 'Removed in PHP 7.0',
+    ];
+
+    $risky = [
+        'ffi' => 'FFI can be dangerous if not properly restricted',
+    ];
+
+    $extLower = strtolower($extension);
+
+    if (isset($deprecated[$extLower])) {
+        return ['type' => 'deprecated', 'message' => $deprecated[$extLower]];
+    }
+
+    if (isset($risky[$extLower])) {
+        return ['type' => 'warning', 'message' => $risky[$extLower]];
+    }
+
+    return null;
+}
+
+/**
  * Status badge color
  */
 function getStatusColor($value, $type = 'boolean') {
@@ -830,6 +917,45 @@ $serverInfo = [
     'Server Time' => date('Y-m-d H:i:s'),
     'Timezone' => date_default_timezone_get()
 ];
+
+// Security analysis
+$securityIssues = [];
+
+// Check PHP version
+if (isPHPVersionEOL($phpVersion)) {
+    $securityIssues[] = [
+        'severity' => 'critical',
+        'title' => 'PHP Version End of Life',
+        'description' => "PHP $phpVersion no longer receives security updates. Upgrade to PHP 8.2 or 8.3."
+    ];
+}
+
+// Check problematic extensions
+$allExtensions = get_loaded_extensions();
+foreach ($allExtensions as $ext) {
+    $problem = isExtensionProblematic($ext);
+    if ($problem) {
+        $securityIssues[] = [
+            'severity' => $problem['type'] === 'deprecated' ? 'high' : 'medium',
+            'title' => "Extension: $ext",
+            'description' => $problem['message']
+        ];
+    }
+}
+
+// Check insecure directives
+foreach ($directives as $category => $dirs) {
+    foreach ($dirs as $directive) {
+        $value = ini_get($directive);
+        if (isDirectiveInsecure($directive, $value)) {
+            $securityIssues[] = [
+                'severity' => 'high',
+                'title' => "Insecure directive: $directive",
+                'description' => "Current value: " . ($value === '' || $value === false ? 'not set' : $value)
+            ];
+        }
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1051,6 +1177,32 @@ $serverInfo = [
             color: #e2e8f0;
             font-size: 0.9em;
             border: 1px solid #475569;
+            cursor: help;
+        }
+
+        .extension-item.extension-deprecated {
+            background: #7f1d1d;
+            border: 2px solid #ef4444;
+            animation: pulse-red 2s ease-in-out infinite;
+        }
+
+        .extension-item.extension-warning {
+            background: #78350f;
+            border: 2px solid #f59e0b;
+        }
+
+        .security-issue {
+            background: rgba(239, 68, 68, 0.1);
+            border-left: 4px solid #ef4444 !important;
+        }
+
+        @keyframes pulse-red {
+            0%, 100% {
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            }
+            50% {
+                box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+            }
         }
 
         .code-block {
@@ -1084,8 +1236,72 @@ $serverInfo = [
         <!-- Header -->
         <div class="header">
             <h1>🔍 PHP Server Diagnostics</h1>
-            <div class="php-version">PHP <?= $phpVersion ?></div>
+            <div class="php-version">
+                PHP <?= $phpVersion ?>
+                <?php if (isPHPVersionEOL($phpVersion)): ?>
+                    <span class="badge error" style="margin-left: 10px; font-size: 0.8em;">⚠️ EOL - No Security Updates</span>
+                <?php endif; ?>
+            </div>
         </div>
+
+        <!-- Security Summary -->
+        <?php if (!empty($securityIssues)): ?>
+        <div class="card full-width" style="border: 2px solid #ef4444; background: linear-gradient(135deg, #1e293b 0%, #1f1f1f 100%);">
+            <div class="card-header" style="background: linear-gradient(135deg, #7f1d1d 0%, #991b1b 100%);">
+                <div class="card-icon" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);">
+                    🚨
+                </div>
+                <div class="card-title">Security Issues Detected (<?= count($securityIssues) ?>)</div>
+            </div>
+            <?php
+            $criticalCount = count(array_filter($securityIssues, fn($i) => $i['severity'] === 'critical'));
+            $highCount = count(array_filter($securityIssues, fn($i) => $i['severity'] === 'high'));
+            $mediumCount = count(array_filter($securityIssues, fn($i) => $i['severity'] === 'medium'));
+            ?>
+            <div class="stat-row">
+                <span class="stat-label">Severity Summary:</span>
+                <span class="stat-value">
+                    <?php if ($criticalCount > 0): ?>
+                        <span class="badge error" style="margin-right: 5px;">🔴 Critical: <?= $criticalCount ?></span>
+                    <?php endif; ?>
+                    <?php if ($highCount > 0): ?>
+                        <span class="badge error" style="margin-right: 5px; background: #dc2626;">⚠️ High: <?= $highCount ?></span>
+                    <?php endif; ?>
+                    <?php if ($mediumCount > 0): ?>
+                        <span class="badge warning">⚡ Medium: <?= $mediumCount ?></span>
+                    <?php endif; ?>
+                </span>
+            </div>
+            <div style="padding: 20px; max-height: 400px; overflow-y: auto;">
+                <?php foreach ($securityIssues as $issue): ?>
+                    <div style="background: #0f172a; padding: 15px; margin-bottom: 10px; border-radius: 5px; border-left: 4px solid <?= $issue['severity'] === 'critical' ? '#dc2626' : ($issue['severity'] === 'high' ? '#ef4444' : '#f59e0b') ?>;">
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                            <span class="badge <?= $issue['severity'] === 'critical' || $issue['severity'] === 'high' ? 'error' : 'warning' ?>" style="font-size: 0.75em;">
+                                <?= strtoupper($issue['severity']) ?>
+                            </span>
+                            <span style="color: #f1f5f9; font-weight: 600;"><?= htmlspecialchars($issue['title']) ?></span>
+                        </div>
+                        <div style="color: #94a3b8; font-size: 0.9em; padding-left: 5px;">
+                            <?= htmlspecialchars($issue['description']) ?>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+        <?php else: ?>
+        <div class="card full-width" style="border: 2px solid #10b981;">
+            <div class="card-header" style="background: linear-gradient(135deg, #065f46 0%, #047857 100%);">
+                <div class="card-icon" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%);">
+                    ✅
+                </div>
+                <div class="card-title">No Critical Security Issues Detected</div>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">Status:</span>
+                <span class="badge success">All major security checks passed</span>
+            </div>
+        </div>
+        <?php endif; ?>
 
         <!-- Server Info Grid -->
         <div class="grid">
@@ -1741,7 +1957,18 @@ $serverInfo = [
                     <div class="category-title"><?= $category ?> (<?= count($exts) ?>)</div>
                     <div class="extension-grid">
                         <?php foreach ($exts as $ext): ?>
-                        <div class="extension-item"><?= $ext ?></div>
+                            <?php $problem = isExtensionProblematic($ext); ?>
+                            <div class="extension-item <?= $problem ? ($problem['type'] === 'deprecated' ? 'extension-deprecated' : 'extension-warning') : '' ?>"
+                                 <?= $problem ? 'title="' . htmlspecialchars($problem['message']) . '"' : '' ?>>
+                                <?= $ext ?>
+                                <?php if ($problem): ?>
+                                    <?php if ($problem['type'] === 'deprecated'): ?>
+                                        <span style="color: #ef4444; font-weight: bold;"> ⚠️</span>
+                                    <?php else: ?>
+                                        <span style="color: #f59e0b; font-weight: bold;"> ⚡</span>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+                            </div>
                         <?php endforeach; ?>
                     </div>
                 </div>
@@ -1762,18 +1989,30 @@ $serverInfo = [
                 <div>
                     <div class="category-title"><?= $category ?></div>
                     <?php foreach ($dirs as $directive): ?>
-                        <?php $value = ini_get($directive); ?>
-                        <div class="stat-row">
-                            <span class="stat-label"><?= $directive ?>:</span>
+                        <?php
+                        $value = ini_get($directive);
+                        $isInsecure = isDirectiveInsecure($directive, $value);
+                        ?>
+                        <div class="stat-row <?= $isInsecure ? 'security-issue' : '' ?>">
+                            <span class="stat-label">
+                                <?= $directive ?>:
+                                <?php if ($isInsecure): ?>
+                                    <span style="color: #ef4444; font-weight: bold;" title="Security Risk!"> ⚠️</span>
+                                <?php endif; ?>
+                            </span>
                             <span class="stat-value">
                                 <?php if ($value === '' || $value === false): ?>
-                                    <span class="badge error">Not set</span>
+                                    <span class="badge <?= $isInsecure ? 'error' : 'warning' ?>">
+                                        <?= $isInsecure ? '⚠️ Not set (RISKY)' : 'Not set' ?>
+                                    </span>
                                 <?php elseif ($value === '1' || $value === 'On'): ?>
-                                    <span class="badge success">On</span>
+                                    <span class="badge <?= $isInsecure ? 'error' : 'success' ?>">
+                                        <?= $isInsecure ? '⚠️ On (RISKY)' : 'On' ?>
+                                    </span>
                                 <?php elseif ($value === '0' || $value === 'Off'): ?>
                                     <span class="badge warning">Off</span>
                                 <?php else: ?>
-                                    <?= htmlspecialchars($value) ?>
+                                    <?= htmlspecialchars(strlen($value) > 100 ? substr($value, 0, 100) . '...' : $value) ?>
                                 <?php endif; ?>
                             </span>
                         </div>
