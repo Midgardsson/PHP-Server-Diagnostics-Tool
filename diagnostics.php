@@ -2,13 +2,22 @@
 /**
  * PHP Server Diagnostics Tool
  * Visual diagnostic tool for PHP environment analysis
+ *
+ * WARNING: Delete this file after use! Contains sensitive system information.
  */
 
-// Security setting - allow only from localhost
-if (!in_array($_SERVER['REMOTE_ADDR'] ?? '', ['127.0.0.1', '::1', 'localhost'])) {
-    // In production, comment this out or add IP whitelist
-    // die('Access denied. This tool is only accessible from localhost.');
-}
+// Configuration constants
+define('REDIS_TIMEOUT', 1);
+define('MEMCACHED_TIMEOUT', 1);
+define('MYSQL_TIMEOUT', 1);
+define('POSTGRES_TIMEOUT', 2);
+define('MONGODB_TIMEOUT', 1);
+
+define('REDIS_DEFAULT_PORT', 6379);
+define('MEMCACHED_DEFAULT_PORT', 11211);
+define('MYSQL_DEFAULT_PORT', 3306);
+define('POSTGRES_DEFAULT_PORT', 5432);
+define('MONGODB_DEFAULT_PORT', 27017);
 
 /**
  * Format bytes to readable format
@@ -30,6 +39,27 @@ function getStatusColor($value, $type = 'boolean') {
         return $value ? '#10b981' : '#ef4444';
     }
     return '#6366f1';
+}
+
+/**
+ * Try multiple connection attempts with a callback
+ *
+ * @param array $attempts Array of connection configurations
+ * @param callable $connectCallback Function to attempt connection
+ * @return array|null Connection result or null
+ */
+function tryConnections(array $attempts, callable $connectCallback) {
+    foreach ($attempts as $attempt) {
+        try {
+            $result = $connectCallback($attempt);
+            if ($result !== null && $result !== false) {
+                return $result;
+            }
+        } catch (Exception $e) {
+            continue;
+        }
+    }
+    return null;
 }
 
 /**
@@ -81,14 +111,23 @@ function getOPcacheInfo() {
         return null;
     }
 
-    $status = @opcache_get_status(false);
-    $config = @opcache_get_configuration();
+    try {
+        $status = opcache_get_status(false);
+        $config = opcache_get_configuration();
 
-    return [
-        'enabled' => $status !== false,
-        'status' => $status,
-        'config' => $config
-    ];
+        return [
+            'enabled' => $status !== false,
+            'status' => $status,
+            'config' => $config
+        ];
+    } catch (Exception $e) {
+        return [
+            'enabled' => false,
+            'status' => false,
+            'config' => null,
+            'error' => $e->getMessage()
+        ];
+    }
 }
 
 /**
@@ -99,14 +138,22 @@ function getAPCuInfo() {
         return null;
     }
 
-    $info = @apcu_cache_info(true);
-    $sma = @apcu_sma_info(true);
+    try {
+        $info = apcu_cache_info(true);
+        $sma = apcu_sma_info(true);
 
-    return [
-        'enabled' => $info !== false,
-        'info' => $info,
-        'sma' => $sma
-    ];
+        if ($info === false || $sma === false) {
+            return null;
+        }
+
+        return [
+            'enabled' => true,
+            'info' => $info,
+            'sma' => $sma
+        ];
+    } catch (Exception $e) {
+        return null;
+    }
 }
 
 /**
@@ -117,42 +164,75 @@ function getRedisInfo() {
         return null;
     }
 
-    $redis = new Redis();
-    $connected = false;
-    $connectionType = '';
-
-    // Try different connection methods
     $attempts = [
         ['type' => 'unix_socket', 'path' => '/var/run/redis/redis-server.sock'],
         ['type' => 'unix_socket', 'path' => '/var/run/redis/redis.sock'],
         ['type' => 'unix_socket', 'path' => '/tmp/redis.sock'],
-        ['type' => 'tcp', 'host' => '127.0.0.1', 'port' => 6379],
-        ['type' => 'tcp', 'host' => 'localhost', 'port' => 6379],
+        ['type' => 'tcp', 'host' => '127.0.0.1', 'port' => REDIS_DEFAULT_PORT],
+        ['type' => 'tcp', 'host' => 'localhost', 'port' => REDIS_DEFAULT_PORT],
     ];
 
-    foreach ($attempts as $attempt) {
-        try {
-            if ($attempt['type'] === 'unix_socket') {
-                if (file_exists($attempt['path'])) {
-                    $connected = @$redis->connect($attempt['path']);
-                    if ($connected) {
-                        $connectionType = 'Unix Socket: ' . $attempt['path'];
-                        break;
-                    }
-                }
-            } else {
-                $connected = @$redis->connect($attempt['host'], $attempt['port'], 1);
-                if ($connected) {
-                    $connectionType = 'TCP: ' . $attempt['host'] . ':' . $attempt['port'];
-                    break;
-                }
-            }
-        } catch (Exception $e) {
-            continue;
-        }
-    }
+    $result = tryConnections($attempts, function($attempt) {
+        $redis = new Redis();
 
-    if (!$connected) {
+        if ($attempt['type'] === 'unix_socket') {
+            if (!file_exists($attempt['path'])) {
+                return null;
+            }
+            $connected = $redis->connect($attempt['path']);
+            $connectionType = 'Unix Socket: ' . $attempt['path'];
+        } else {
+            $connected = $redis->connect($attempt['host'], $attempt['port'], REDIS_TIMEOUT);
+            $connectionType = 'TCP: ' . $attempt['host'] . ':' . $attempt['port'];
+        }
+
+        if (!$connected) {
+            return null;
+        }
+
+        try {
+            $info = $redis->info();
+            $dbsize = $redis->dbSize();
+
+            // Memory information
+            $usedMemory = $info['used_memory'] ?? 0;
+            $maxMemory = $info['maxmemory'] ?? 0;
+
+            // Stats
+            $hits = $info['keyspace_hits'] ?? 0;
+            $misses = $info['keyspace_misses'] ?? 0;
+            $total = $hits + $misses;
+            $hitRate = $total > 0 ? ($hits / $total) * 100 : 0;
+
+            return [
+                'enabled' => true,
+                'connected' => true,
+                'connection_type' => $connectionType,
+                'version' => $info['redis_version'] ?? 'N/A',
+                'uptime' => $info['uptime_in_seconds'] ?? 0,
+                'used_memory' => $usedMemory,
+                'max_memory' => $maxMemory,
+                'total_keys' => $dbsize,
+                'hits' => $hits,
+                'misses' => $misses,
+                'hit_rate' => $hitRate,
+                'connected_clients' => $info['connected_clients'] ?? 0,
+                'evicted_keys' => $info['evicted_keys'] ?? 0,
+                'expired_keys' => $info['expired_keys'] ?? 0,
+                'redis_mode' => $info['redis_mode'] ?? 'standalone',
+                'os' => $info['os'] ?? 'N/A',
+                'process_id' => $info['process_id'] ?? 'N/A'
+            ];
+        } catch (Exception $e) {
+            return [
+                'enabled' => true,
+                'connected' => true,
+                'error' => $e->getMessage()
+            ];
+        }
+    });
+
+    if ($result === null) {
         return [
             'enabled' => true,
             'connected' => false,
@@ -160,46 +240,7 @@ function getRedisInfo() {
         ];
     }
 
-    try {
-        $info = $redis->info();
-        $dbsize = $redis->dbSize();
-        
-        // Memory information
-        $usedMemory = $info['used_memory'] ?? 0;
-        $maxMemory = $info['maxmemory'] ?? 0;
-        
-        // Stats
-        $hits = $info['keyspace_hits'] ?? 0;
-        $misses = $info['keyspace_misses'] ?? 0;
-        $total = $hits + $misses;
-        $hitRate = $total > 0 ? ($hits / $total) * 100 : 0;
-
-        return [
-            'enabled' => true,
-            'connected' => true,
-            'connection_type' => $connectionType,
-            'version' => $info['redis_version'] ?? 'N/A',
-            'uptime' => $info['uptime_in_seconds'] ?? 0,
-            'used_memory' => $usedMemory,
-            'max_memory' => $maxMemory,
-            'total_keys' => $dbsize,
-            'hits' => $hits,
-            'misses' => $misses,
-            'hit_rate' => $hitRate,
-            'connected_clients' => $info['connected_clients'] ?? 0,
-            'evicted_keys' => $info['evicted_keys'] ?? 0,
-            'expired_keys' => $info['expired_keys'] ?? 0,
-            'redis_mode' => $info['redis_mode'] ?? 'standalone',
-            'os' => $info['os'] ?? 'N/A',
-            'process_id' => $info['process_id'] ?? 'N/A'
-        ];
-    } catch (Exception $e) {
-        return [
-            'enabled' => true,
-            'connected' => true,
-            'error' => $e->getMessage()
-        ];
-    }
+    return $result;
 }
 
 /**
@@ -210,54 +251,71 @@ function getMemcachedInfo() {
         return null;
     }
 
-    $result = [
-        'enabled' => true,
-        'connected' => false,
-        'extension' => extension_loaded('memcached') ? 'memcached' : 'memcache'
-    ];
+    $extension = extension_loaded('memcached') ? 'memcached' : 'memcache';
 
-    try {
-        if (extension_loaded('memcached')) {
-            $memcached = new Memcached();
-            $servers = [
-                ['127.0.0.1', 11211],
-                ['localhost', 11211],
-                ['/var/run/memcached/memcached.sock', 0]
-            ];
-
-            foreach ($servers as $server) {
-                $memcached->addServer($server[0], $server[1]);
-            }
-
-            $stats = @$memcached->getStats();
-            if ($stats && !empty($stats)) {
-                $serverKey = array_key_first($stats);
-                $stat = $stats[$serverKey];
-                
-                if ($stat && isset($stat['pid'])) {
-                    $result['connected'] = true;
-                    $result['connection'] = $serverKey;
-                    $result['version'] = $stat['version'] ?? 'N/A';
-                    $result['uptime'] = $stat['uptime'] ?? 0;
-                    $result['curr_items'] = $stat['curr_items'] ?? 0;
-                    $result['total_items'] = $stat['total_items'] ?? 0;
-                    $result['bytes'] = $stat['bytes'] ?? 0;
-                    $result['limit_maxbytes'] = $stat['limit_maxbytes'] ?? 0;
-                    $result['get_hits'] = $stat['get_hits'] ?? 0;
-                    $result['get_misses'] = $stat['get_misses'] ?? 0;
-                    $result['evictions'] = $stat['evictions'] ?? 0;
-                    $result['curr_connections'] = $stat['curr_connections'] ?? 0;
-                    
-                    $total = $result['get_hits'] + $result['get_misses'];
-                    $result['hit_rate'] = $total > 0 ? ($result['get_hits'] / $total) * 100 : 0;
-                }
-            }
-        }
-    } catch (Exception $e) {
-        $result['error'] = $e->getMessage();
+    if ($extension !== 'memcached') {
+        return [
+            'enabled' => true,
+            'connected' => false,
+            'extension' => $extension,
+            'error' => 'Only memcached extension is supported'
+        ];
     }
 
-    return $result;
+    try {
+        $memcached = new Memcached();
+        $servers = [
+            ['127.0.0.1', MEMCACHED_DEFAULT_PORT],
+            ['localhost', MEMCACHED_DEFAULT_PORT],
+            ['/var/run/memcached/memcached.sock', 0]
+        ];
+
+        foreach ($servers as $server) {
+            $memcached->addServer($server[0], $server[1]);
+        }
+
+        $stats = $memcached->getStats();
+        if ($stats && !empty($stats)) {
+            $serverKey = array_key_first($stats);
+            $stat = $stats[$serverKey];
+
+            if ($stat && isset($stat['pid'])) {
+                $total = ($stat['get_hits'] ?? 0) + ($stat['get_misses'] ?? 0);
+
+                return [
+                    'enabled' => true,
+                    'connected' => true,
+                    'extension' => $extension,
+                    'connection' => $serverKey,
+                    'version' => $stat['version'] ?? 'N/A',
+                    'uptime' => $stat['uptime'] ?? 0,
+                    'curr_items' => $stat['curr_items'] ?? 0,
+                    'total_items' => $stat['total_items'] ?? 0,
+                    'bytes' => $stat['bytes'] ?? 0,
+                    'limit_maxbytes' => $stat['limit_maxbytes'] ?? 0,
+                    'get_hits' => $stat['get_hits'] ?? 0,
+                    'get_misses' => $stat['get_misses'] ?? 0,
+                    'evictions' => $stat['evictions'] ?? 0,
+                    'curr_connections' => $stat['curr_connections'] ?? 0,
+                    'hit_rate' => $total > 0 ? (($stat['get_hits'] ?? 0) / $total) * 100 : 0
+                ];
+            }
+        }
+
+        return [
+            'enabled' => true,
+            'connected' => false,
+            'extension' => $extension,
+            'error' => 'Could not retrieve stats'
+        ];
+    } catch (Exception $e) {
+        return [
+            'enabled' => true,
+            'connected' => false,
+            'extension' => $extension,
+            'error' => $e->getMessage()
+        ];
+    }
 }
 
 /**
@@ -268,58 +326,63 @@ function getMySQLInfo() {
         return null;
     }
 
-    $result = [
-        'enabled' => true,
-        'connected' => false
-    ];
-
     $attempts = [
         ['host' => 'localhost', 'socket' => '/var/run/mysqld/mysqld.sock'],
         ['host' => '127.0.0.1', 'socket' => null],
         ['host' => 'localhost', 'socket' => '/tmp/mysql.sock'],
     ];
 
-    foreach ($attempts as $attempt) {
-        try {
-            $mysqli = @new mysqli($attempt['host'], '', '', '', 0, $attempt['socket']);
-            
-            if (!$mysqli->connect_error) {
-                $result['connected'] = true;
-                $result['connection'] = $attempt['socket'] ?: $attempt['host'];
-                
-                // Version
-                $version = $mysqli->get_server_info();
-                $result['version'] = $version;
-                $result['is_mariadb'] = stripos($version, 'mariadb') !== false;
-                
-                // Status variables
-                $status = [];
-                if ($res = $mysqli->query("SHOW GLOBAL STATUS")) {
-                    while ($row = $res->fetch_assoc()) {
-                        $status[$row['Variable_name']] = $row['Value'];
-                    }
-                    $res->close();
-                }
-                
-                $result['uptime'] = $status['Uptime'] ?? 0;
-                $result['threads_connected'] = $status['Threads_connected'] ?? 0;
-                $result['questions'] = $status['Questions'] ?? 0;
-                $result['queries'] = $status['Queries'] ?? 0;
-                $result['bytes_received'] = $status['Bytes_received'] ?? 0;
-                $result['bytes_sent'] = $status['Bytes_sent'] ?? 0;
-                
-                // InnoDB buffer pool if available
-                if (isset($status['Innodb_buffer_pool_pages_total'])) {
-                    $result['innodb_buffer_pool_size'] = ($status['Innodb_buffer_pool_pages_total'] ?? 0) * 16384; // page size 16KB
-                    $result['innodb_buffer_pool_pages_free'] = $status['Innodb_buffer_pool_pages_free'] ?? 0;
-                }
-                
-                $mysqli->close();
-                break;
-            }
-        } catch (Exception $e) {
-            continue;
+    $result = tryConnections($attempts, function($attempt) {
+        mysqli_report(MYSQLI_REPORT_OFF);
+        $mysqli = new mysqli($attempt['host'], '', '', '', 0, $attempt['socket']);
+
+        if ($mysqli->connect_error) {
+            return null;
         }
+
+        $data = [
+            'enabled' => true,
+            'connected' => true,
+            'connection' => $attempt['socket'] ?: $attempt['host']
+        ];
+
+        // Version
+        $version = $mysqli->get_server_info();
+        $data['version'] = $version;
+        $data['is_mariadb'] = stripos($version, 'mariadb') !== false;
+
+        // Status variables
+        $status = [];
+        $res = $mysqli->query("SHOW GLOBAL STATUS");
+        if ($res) {
+            while ($row = $res->fetch_assoc()) {
+                $status[$row['Variable_name']] = $row['Value'];
+            }
+            $res->close();
+        }
+
+        $data['uptime'] = $status['Uptime'] ?? 0;
+        $data['threads_connected'] = $status['Threads_connected'] ?? 0;
+        $data['questions'] = $status['Questions'] ?? 0;
+        $data['queries'] = $status['Queries'] ?? 0;
+        $data['bytes_received'] = $status['Bytes_received'] ?? 0;
+        $data['bytes_sent'] = $status['Bytes_sent'] ?? 0;
+
+        // InnoDB buffer pool if available
+        if (isset($status['Innodb_buffer_pool_pages_total'])) {
+            $data['innodb_buffer_pool_size'] = ($status['Innodb_buffer_pool_pages_total'] ?? 0) * 16384; // page size 16KB
+            $data['innodb_buffer_pool_pages_free'] = $status['Innodb_buffer_pool_pages_free'] ?? 0;
+        }
+
+        $mysqli->close();
+        return $data;
+    });
+
+    if ($result === null) {
+        return [
+            'enabled' => true,
+            'connected' => false
+        ];
     }
 
     return $result;
@@ -333,49 +396,52 @@ function getPostgreSQLInfo() {
         return null;
     }
 
-    $result = [
-        'enabled' => true,
-        'connected' => false
-    ];
-
     $attempts = [
-        "host=localhost port=5432 dbname=postgres user=postgres",
-        "host=127.0.0.1 port=5432 dbname=postgres",
-        "host=/var/run/postgresql dbname=postgres"
+        "host=localhost port=" . POSTGRES_DEFAULT_PORT . " dbname=postgres user=postgres connect_timeout=" . POSTGRES_TIMEOUT,
+        "host=127.0.0.1 port=" . POSTGRES_DEFAULT_PORT . " dbname=postgres connect_timeout=" . POSTGRES_TIMEOUT,
+        "host=/var/run/postgresql dbname=postgres connect_timeout=" . POSTGRES_TIMEOUT
     ];
 
-    foreach ($attempts as $connstr) {
-        try {
-            $conn = @pg_connect($connstr);
-            if ($conn) {
-                $result['connected'] = true;
-                $result['connection'] = $connstr;
-                
-                // Version
-                $version = pg_version($conn);
-                $result['server_version'] = $version['server'] ?? 'N/A';
-                $result['client_version'] = $version['client'] ?? 'N/A';
-                
-                // Database count
-                $res = @pg_query($conn, "SELECT count(*) as db_count FROM pg_database WHERE datistemplate = false");
-                if ($res) {
-                    $row = pg_fetch_assoc($res);
-                    $result['database_count'] = $row['db_count'];
-                }
-                
-                // Connections
-                $res = @pg_query($conn, "SELECT count(*) as conn_count FROM pg_stat_activity");
-                if ($res) {
-                    $row = pg_fetch_assoc($res);
-                    $result['active_connections'] = $row['conn_count'];
-                }
-                
-                pg_close($conn);
-                break;
-            }
-        } catch (Exception $e) {
-            continue;
+    $result = tryConnections($attempts, function($connstr) {
+        $conn = pg_connect($connstr);
+        if (!$conn) {
+            return null;
         }
+
+        $data = [
+            'enabled' => true,
+            'connected' => true,
+            'connection' => $connstr
+        ];
+
+        // Version
+        $version = pg_version($conn);
+        $data['server_version'] = $version['server'] ?? 'N/A';
+        $data['client_version'] = $version['client'] ?? 'N/A';
+
+        // Database count
+        $res = pg_query($conn, "SELECT count(*) as db_count FROM pg_database WHERE datistemplate = false");
+        if ($res) {
+            $row = pg_fetch_assoc($res);
+            $data['database_count'] = $row['db_count'] ?? 0;
+        }
+
+        // Connections
+        $res = pg_query($conn, "SELECT count(*) as conn_count FROM pg_stat_activity");
+        if ($res) {
+            $row = pg_fetch_assoc($res);
+            $data['active_connections'] = $row['conn_count'] ?? 0;
+        }
+
+        pg_close($conn);
+        return $data;
+    });
+
+    if ($result === null) {
+        return [
+            'enabled' => true,
+            'connected' => false
+        ];
     }
 
     return $result;
@@ -385,18 +451,21 @@ function getPostgreSQLInfo() {
  * PDO connection information
  */
 function getPDOInfo() {
+    if (!extension_loaded('pdo')) {
+        return null;
+    }
+
     $pdoDrivers = [];
-    
-    if (extension_loaded('pdo')) {
-        $availableDrivers = PDO::getAvailableDrivers();
-        
-        foreach ($availableDrivers as $driver) {
-            $driverInfo = [
-                'driver' => $driver,
-                'available' => true,
-                'connected' => false
-            ];
-            
+    $availableDrivers = PDO::getAvailableDrivers();
+
+    foreach ($availableDrivers as $driver) {
+        $driverInfo = [
+            'driver' => $driver,
+            'available' => true,
+            'connected' => false
+        ];
+
+        try {
             // MySQL PDO
             if ($driver === 'mysql') {
                 $attempts = [
@@ -404,62 +473,68 @@ function getPDOInfo() {
                     ['dsn' => 'mysql:host=127.0.0.1;charset=utf8mb4', 'socket' => null],
                     ['dsn' => 'mysql:unix_socket=/tmp/mysql.sock;charset=utf8mb4', 'socket' => '/tmp/mysql.sock'],
                 ];
-                
-                foreach ($attempts as $attempt) {
-                    try {
-                        $dsn = $attempt['dsn'];
-                        $pdo = new PDO($dsn, '', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-                        $driverInfo['connected'] = true;
-                        $driverInfo['connection'] = $attempt['socket'] ?: 'TCP';
-                        $version = $pdo->query('SELECT VERSION()')->fetchColumn();
-                        $driverInfo['version'] = $version;
-                        $driverInfo['is_mariadb'] = stripos($version, 'mariadb') !== false;
-                        break;
-                    } catch (Exception $e) {
-                        continue;
-                    }
+
+                $result = tryConnections($attempts, function($attempt) {
+                    $pdo = new PDO($attempt['dsn'], '', '', [
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                        PDO::ATTR_TIMEOUT => MYSQL_TIMEOUT
+                    ]);
+                    $version = $pdo->query('SELECT VERSION()')->fetchColumn();
+                    return [
+                        'connected' => true,
+                        'connection' => $attempt['socket'] ?: 'TCP',
+                        'version' => $version,
+                        'is_mariadb' => stripos($version, 'mariadb') !== false
+                    ];
+                });
+
+                if ($result) {
+                    $driverInfo = array_merge($driverInfo, $result);
                 }
             }
-            
+
             // PostgreSQL PDO
             if ($driver === 'pgsql') {
                 $attempts = [
-                    'pgsql:host=localhost;port=5432;dbname=postgres',
-                    'pgsql:host=127.0.0.1;port=5432;dbname=postgres',
-                    'pgsql:host=/var/run/postgresql;dbname=postgres'
+                    ['dsn' => 'pgsql:host=localhost;port=' . POSTGRES_DEFAULT_PORT . ';dbname=postgres'],
+                    ['dsn' => 'pgsql:host=127.0.0.1;port=' . POSTGRES_DEFAULT_PORT . ';dbname=postgres'],
+                    ['dsn' => 'pgsql:host=/var/run/postgresql;dbname=postgres']
                 ];
-                
-                foreach ($attempts as $dsn) {
-                    try {
-                        $pdo = new PDO($dsn, 'postgres', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-                        $driverInfo['connected'] = true;
-                        $driverInfo['connection'] = $dsn;
-                        $version = $pdo->query('SELECT version()')->fetchColumn();
-                        $driverInfo['version'] = explode(' on ', $version)[0];
-                        break;
-                    } catch (Exception $e) {
-                        continue;
-                    }
+
+                $result = tryConnections($attempts, function($attempt) {
+                    $pdo = new PDO($attempt['dsn'], 'postgres', '', [
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                        PDO::ATTR_TIMEOUT => POSTGRES_TIMEOUT
+                    ]);
+                    $version = $pdo->query('SELECT version()')->fetchColumn();
+                    $versionParts = explode(' on ', $version);
+                    return [
+                        'connected' => true,
+                        'connection' => $attempt['dsn'],
+                        'version' => $versionParts[0] ?? $version
+                    ];
+                });
+
+                if ($result) {
+                    $driverInfo = array_merge($driverInfo, $result);
                 }
             }
-            
+
             // SQLite PDO
             if ($driver === 'sqlite') {
-                try {
-                    $pdo = new PDO('sqlite::memory:');
-                    $driverInfo['connected'] = true;
-                    $driverInfo['connection'] = 'In-Memory';
-                    $version = $pdo->query('SELECT sqlite_version()')->fetchColumn();
-                    $driverInfo['version'] = $version;
-                } catch (Exception $e) {
-                    $driverInfo['error'] = $e->getMessage();
-                }
+                $pdo = new PDO('sqlite::memory:');
+                $version = $pdo->query('SELECT sqlite_version()')->fetchColumn();
+                $driverInfo['connected'] = true;
+                $driverInfo['connection'] = 'In-Memory';
+                $driverInfo['version'] = $version;
             }
-            
-            $pdoDrivers[] = $driverInfo;
+        } catch (Exception $e) {
+            $driverInfo['error'] = $e->getMessage();
         }
+
+        $pdoDrivers[] = $driverInfo;
     }
-    
+
     return !empty($pdoDrivers) ? $pdoDrivers : null;
 }
 
@@ -494,24 +569,24 @@ function getMongoDBInfo() {
         return null;
     }
 
-    $result = [
-        'enabled' => true,
-        'connected' => false
-    ];
-
     try {
-        $manager = new MongoDB\Driver\Manager("mongodb://localhost:27017");
+        $connectionString = "mongodb://localhost:" . MONGODB_DEFAULT_PORT . "/?connectTimeoutMS=" . (MONGODB_TIMEOUT * 1000);
+        $manager = new MongoDB\Driver\Manager($connectionString);
+
         $command = new MongoDB\Driver\Command(['ping' => 1]);
         $manager->executeCommand('admin', $command);
-        
-        $result['connected'] = true;
-        $result['connection'] = 'localhost:27017';
-        
+
         // Server status
         $command = new MongoDB\Driver\Command(['serverStatus' => 1]);
         $cursor = $manager->executeCommand('admin', $command);
         $status = current($cursor->toArray());
-        
+
+        $result = [
+            'enabled' => true,
+            'connected' => true,
+            'connection' => 'localhost:' . MONGODB_DEFAULT_PORT
+        ];
+
         if ($status) {
             $result['version'] = $status->version ?? 'N/A';
             $result['uptime'] = $status->uptime ?? 0;
@@ -523,11 +598,15 @@ function getMongoDBInfo() {
                 'delete' => $status->opcounters->delete ?? 0,
             ];
         }
-    } catch (Exception $e) {
-        $result['error'] = $e->getMessage();
-    }
 
-    return $result;
+        return $result;
+    } catch (Exception $e) {
+        return [
+            'enabled' => true,
+            'connected' => false,
+            'error' => $e->getMessage()
+        ];
+    }
 }
 
 /**
@@ -535,27 +614,29 @@ function getMongoDBInfo() {
  */
 function getDiskInfo() {
     $disks = [];
-    
+
     // Linux system df command
     if (PHP_OS_FAMILY === 'Linux' || PHP_OS_FAMILY === 'Darwin') {
-        $output = @shell_exec('df -h 2>/dev/null');
+        $output = shell_exec('df -h 2>/dev/null');
         if ($output) {
             $lines = explode("\n", trim($output));
             array_shift($lines); // Header row
-            
+
+            $diskFilesystems = [];
             foreach ($lines as $line) {
                 if (empty(trim($line))) continue;
-                
+
                 $parts = preg_split('/\s+/', $line);
                 if (count($parts) >= 6) {
                     $filesystem = $parts[0];
                     // Skip temp filesystems and loops
-                    if (strpos($filesystem, 'tmpfs') !== false || 
+                    if (strpos($filesystem, 'tmpfs') !== false ||
                         strpos($filesystem, 'loop') !== false ||
                         strpos($filesystem, 'devtmpfs') !== false) {
                         continue;
                     }
-                    
+
+                    $diskFilesystems[] = $filesystem;
                     $disks[] = [
                         'filesystem' => $filesystem,
                         'size' => $parts[1],
@@ -567,35 +648,44 @@ function getDiskInfo() {
                 }
             }
         }
-        
-        // Inode information
-        $inodeOutput = @shell_exec('df -i 2>/dev/null');
-        if ($inodeOutput) {
+
+        // Inode information - match by filesystem name
+        $inodeOutput = shell_exec('df -i 2>/dev/null');
+        if ($inodeOutput && !empty($diskFilesystems)) {
             $lines = explode("\n", trim($inodeOutput));
             array_shift($lines);
-            $inodeIndex = 0;
-            
+
             foreach ($lines as $line) {
                 if (empty(trim($line))) continue;
-                
+
                 $parts = preg_split('/\s+/', $line);
-                if (count($parts) >= 6 && isset($disks[$inodeIndex])) {
-                    $disks[$inodeIndex]['inode_use_percent'] = rtrim($parts[4], '%');
-                    $inodeIndex++;
+                if (count($parts) >= 6) {
+                    $filesystem = $parts[0];
+                    // Find matching disk by filesystem
+                    foreach ($disks as $index => $disk) {
+                        if ($disk['filesystem'] === $filesystem) {
+                            $disks[$index]['inode_use_percent'] = rtrim($parts[4], '%');
+                            break;
+                        }
+                    }
                 }
             }
         }
     } else {
         // Windows case
-        $disks[] = [
-            'filesystem' => 'C:',
-            'total' => disk_total_space('C:'),
-            'free' => disk_free_space('C:'),
-            'used' => disk_total_space('C:') - disk_free_space('C:'),
-            'use_percent' => round((1 - disk_free_space('C:') / disk_total_space('C:')) * 100, 2)
-        ];
+        $totalSpace = disk_total_space('C:');
+        $freeSpace = disk_free_space('C:');
+        if ($totalSpace && $freeSpace) {
+            $disks[] = [
+                'filesystem' => 'C:',
+                'total' => $totalSpace,
+                'free' => $freeSpace,
+                'used' => $totalSpace - $freeSpace,
+                'use_percent' => round((1 - $freeSpace / $totalSpace) * 100, 2)
+            ];
+        }
     }
-    
+
     return $disks;
 }
 
@@ -606,39 +696,44 @@ function getSystemLoad() {
     $info = [
         'cpu_count' => 1
     ];
-    
+
     // CPU count
     if (function_exists('shell_exec')) {
         if (PHP_OS_FAMILY === 'Linux') {
-            $cpuinfo = @shell_exec('nproc 2>/dev/null');
-            if ($cpuinfo) {
-                $info['cpu_count'] = (int)trim($cpuinfo);
+            $cpuinfo = shell_exec('nproc 2>/dev/null');
+            if ($cpuinfo && trim($cpuinfo) !== '') {
+                $info['cpu_count'] = max(1, (int)trim($cpuinfo));
             }
         } elseif (PHP_OS_FAMILY === 'Darwin') {
-            $cpuinfo = @shell_exec('sysctl -n hw.ncpu 2>/dev/null');
-            if ($cpuinfo) {
-                $info['cpu_count'] = (int)trim($cpuinfo);
+            $cpuinfo = shell_exec('sysctl -n hw.ncpu 2>/dev/null');
+            if ($cpuinfo && trim($cpuinfo) !== '') {
+                $info['cpu_count'] = max(1, (int)trim($cpuinfo));
             }
         }
     }
-    
+
     // Load average (Linux/Unix only)
     if (function_exists('sys_getloadavg')) {
         $load = sys_getloadavg();
-        $info['load_1min'] = $load[0];
-        $info['load_5min'] = $load[1];
-        $info['load_15min'] = $load[2];
-        $info['load_percent_1min'] = ($load[0] / $info['cpu_count']) * 100;
-    }
-    
-    // Uptime
-    if (PHP_OS_FAMILY === 'Linux') {
-        $uptime = @shell_exec('cat /proc/uptime 2>/dev/null');
-        if ($uptime) {
-            $info['uptime_seconds'] = (int)explode(' ', $uptime)[0];
+        if ($load && is_array($load) && count($load) >= 3) {
+            $info['load_1min'] = $load[0];
+            $info['load_5min'] = $load[1];
+            $info['load_15min'] = $load[2];
+            $info['load_percent_1min'] = ($load[0] / $info['cpu_count']) * 100;
         }
     }
-    
+
+    // Uptime
+    if (PHP_OS_FAMILY === 'Linux') {
+        $uptime = shell_exec('cat /proc/uptime 2>/dev/null');
+        if ($uptime) {
+            $parts = explode(' ', trim($uptime));
+            if (isset($parts[0]) && is_numeric($parts[0])) {
+                $info['uptime_seconds'] = (int)$parts[0];
+            }
+        }
+    }
+
     return $info;
 }
 
